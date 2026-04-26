@@ -1,5 +1,51 @@
 # Changelog de Desarrollo - AudioBrain
 
+## [0.1.1] - 2026-03-31
+
+### Implementado - FASE 1: Modelo Transformer (COMPLETADO)
+
+#### Componentes Creados en esta sesión
+
+**Modelo Principal (`audiobrain/model/core.py`)**
+
+- `core.py` - `AudioBrainCore`: Modelo principal que integra ProjectionHead + SoundscapeTransformer
+  - Input: `[batch, seq_len, 2048]` (embeddings de PANNs)
+  - Output: `[batch, seq_len, 512]` (espacio latente contextualizado)
+  - Métodos: `forward()`, `encode()`, `get_config()`, `count_parameters()`, `__repr__()`
+  - Auto-configuración de dispositivo (CUDA/MPS/CPU)
+  - Validación de dimensiones en tiempo de ejecución
+
+#### Especificaciones de AudioBrainCore
+
+- Integra ProjectionHead y SoundscapeTransformer en un solo modelo
+- Configurable mediante BrainConfig dataclass
+- Incluye método `encode()` para claridad semántica
+- Método `count_parameters()` para inspección del modelo
+- Representación string detallada con `__repr__()`
+
+#### Archivos Creados/Modificados
+
+| Archivo                          | Líneas | Descripción                        |
+| -------------------------------- | ------ | ---------------------------------- |
+| `audiobrain/model/core.py`       | 150    | Modelo principal AudioBrainCore    |
+
+#### Validaciones Incluidas
+
+- Validación de dimensiones de entrada (2048 -> 512)
+- Auto-detección y movimiento al dispositivo correcto
+- Aplicación automática de seed para reproducibilidad
+- Conteo de parámetros entrenables
+
+#### Estado del Proyecto
+
+✅ **FASE 1 COMPLETADA**: Todos los componentes del Transformer están implementados:
+- `BrainConfig` - Configuración completa
+- `ProjectionHead` - Capa de proyección
+- `SoundscapeTransformer` - Encoder Transformer
+- `AudioBrainCore` - Modelo principal integrado
+
+---
+
 ## [0.1.0] - 2026-03-31
 
 ### Implementado - FASE 1: Modelo Transformer
