@@ -19,9 +19,9 @@ class AudioMosaicSynthesizer:
     """
     
     def __init__(self,
-                 segment_duration: float = 0.1,
+                 segment_duration: float = 1.0,  # Aumentado a 1.0s para PANNs
                  sample_rate: int = 22050,
-                 crossfade_duration: float = 0.02,
+                 crossfade_duration: float = 0.1,  # Crossfade más largo para segmentos largos
                  device: Optional[str] = None):
         
         self.segment_duration = segment_duration
@@ -45,7 +45,7 @@ class AudioMosaicSynthesizer:
                       audio_files: List[str],
                       feature_extractor,
                       pipeline,
-                      max_segments: int = 1000):
+                      max_segments: int = 50):  # Reducido max_segments porque ahora son más largos
         """Builds the audio segment database with corresponding latent vectors."""
         print(f"\nBuilding database from {len(audio_files)} files...")
         
@@ -63,6 +63,8 @@ class AudioMosaicSynthesizer:
                 audio, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
                 num_segments = len(audio) // self.samples_per_segment
                 
+                print(f"    Audio length: {len(audio)/sr:.2f}s -> {num_segments} segments possible")
+                
                 for j in range(num_segments):
                     if segments_extracted >= max_segments:
                         break
@@ -71,6 +73,7 @@ class AudioMosaicSynthesizer:
                     end_idx = start_idx + self.samples_per_segment
                     segment = audio[start_idx:end_idx]
                     
+                    # Umbral de silencio más estricto para segmentos largos
                     if np.max(np.abs(segment)) < 0.01:
                         continue
                     
@@ -85,6 +88,10 @@ class AudioMosaicSynthesizer:
                         self.audio_database.append(segment)
                         latent_list.append(latent_vector.cpu())
                         segments_extracted += 1
+                        print(f"      Extracted segment {segments_extracted}")
+                    except Exception as e:
+                        print(f"      Failed to extract features: {e}")
+                        continue
                     finally:
                         os.unlink(tmp_path)
                         
@@ -146,7 +153,7 @@ class AudioMosaicSynthesizer:
                 selected_idx = indices[torch.randint(0, actual_k, (1,))].item()
                 synthesized_segments.append(self.audio_database[selected_idx])
                 
-                if (i + 1) % 10 == 0:
+                if (i + 1) % 5 == 0:
                     print(f"    Progress: {i+1}/{seq_len}")
         
         return self._crossfade_concatenate(synthesized_segments), self.sample_rate
@@ -207,4 +214,5 @@ class AudioMosaicSynthesizer:
             'device': self.device
         }
 
-    
+    def __repr__(self):
+        return f"AudioMosaicSynthesizer(db={len(self.audio_database)}, device={self.device})"
