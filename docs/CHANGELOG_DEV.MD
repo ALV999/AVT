@@ -1,5 +1,83 @@
 # Changelog de Desarrollo - AudioBrain
 
+## [0.1.2] - 2026-03-31
+
+### Implementado - FASE 2: Integración PANNs (COMPLETADO)
+
+#### Componentes Creados en esta sesión
+
+**Extractor de Características (`audiobrain/model/feature_extractor.py`)**
+
+- `PANNsFeatureExtractor`: Clase principal para extracción de features de audio
+  - Input: Audio waveform crudo o path a archivo .wav/.mp3
+  - Output: Embeddings de 2048-dim usando PANNs CNN14
+  - Métodos principales:
+    - `preprocess_audio()`: Carga, resamplea y normaliza audio
+    - `extract_features()`: Extrae embeddings en chunks de 1 segundo
+    - `extract_for_transformer()`: Formatea output para AudioBrainCore [1, 63, 2048]
+  - Auto-detección de dispositivo (CUDA/MPS/CPU)
+  - Fallback a implementación manual si no hay modelos pre-entrenados
+
+**Pipeline de Procesamiento (`audiobrain/model/pipeline.py`)**
+
+- `AudioProcessingPipeline`: Conecta PANNs con AudioBrainCore
+  - Integra feature extraction + transformer encoding
+  - Métodos:
+    - `process_audio()`: Procesa un archivo individual
+    - `process_batch()`: Procesa múltiples archivos en lote
+    - `get_model_info()`: Retorna información del modelo
+  - Output: Tuple (raw_embeddings [1, 63, 2048], latent_vectors [1, 63, 512])
+
+**Actualización de Módulo (`audiobrain/model/__init__.py`)**
+
+- Exporta `PANNsFeatureExtractor` junto con componentes existentes
+- Actualiza `__all__` para incluir nuevo extractor
+
+#### Especificaciones Técnicas
+
+**PANNs Feature Extractor:**
+- Sample rate: 32kHz (configurable)
+- Embedding dimension: 2048 (PANNs CNN14)
+- Chunk duration: 1.0 segundos por embedding
+- Hop length: 320 samples (~10ms)
+- Modelos soportados: HuggingFace transformers + fallback manual
+
+**Audio Processing Pipeline:**
+- Secuencia completa: Raw Audio → PANNs → [2048-dim] → AudioBrainCore → [512-dim]
+- Target sequence length: 63 (para visualización 63x63)
+- Batch processing support para múltiples archivos
+- Auto-interpolación/padding para alcanzar seq_len=63
+
+#### Archivos Creados/Modificados
+
+| Archivo                              | Líneas | Descripción                          |
+| ------------------------------------ | ------ | ------------------------------------ |
+| `audiobrain/model/feature_extractor.py` | 258    | Extractor PANNs completo             |
+| `audiobrain/model/pipeline.py`       | 201    | Pipeline de procesamiento integrado  |
+| `audiobrain/model/__init__.py`       | +2     | Exporta PANNsFeatureExtractor        |
+
+#### Flujo de Datos Completado
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
+│ Raw Audio   │ ──→ │ PANNs CNN14  │ ──→ │ AudioBrainCore  │ ──→ │ Latent Vectors│
+│ .wav/.mp3   │     │ [2048-dim]   │     │ Transformer     │     │ [512-dim]    │
+└─────────────┘     └──────────────┘     └─────────────────┘     └──────────────┘
+      ↓                    ↓                      ↓                     ↓
+  [samples]          [seq, 2048]            [1, seq, 512]        [1, 63, 512]
+```
+
+#### Estado del Proyecto
+
+✅ **FASE 2 COMPLETADA**: Pipeline completo implementado:
+- `PANNsFeatureExtractor` - Extracción de características desde audio crudo
+- `AudioProcessingPipeline` - Integración completa PANNs → Transformer
+- Conexión funcional entre módulos Fase 1 y Fase 2
+
+⚠️ **Nota**: La creación de audio real ocurrirá en FASE 3 (Síntesis por Mosaicing)
+
+---
+
 ## [0.1.1] - 2026-03-31
 
 ### Implementado - FASE 1: Modelo Transformer (COMPLETADO)
