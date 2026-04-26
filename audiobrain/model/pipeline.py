@@ -103,6 +103,19 @@ class AudioProcessingPipeline:
         
         return raw_embeddings, latent_vectors
     
+    def process_file(self, audio_path: str) -> torch.Tensor:
+        """
+        Process an audio file through the full pipeline: PANNs -> Transformer
+        
+        Args:
+            audio_path: Path to the audio file
+            
+        Returns:
+            Latent vectors [batch, seq_len, 512]
+        """
+        _, latent = self.process_audio(audio_path)
+        return latent
+    
     def process_batch(self,
                      audio_paths: list,
                      target_seq_len: int = 63) -> Tuple[torch.Tensor, torch.Tensor]:
