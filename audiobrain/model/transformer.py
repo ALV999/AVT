@@ -21,6 +21,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn import TransformerEncoder
 
 
 class SoundscapeTransformer(nn.Module):

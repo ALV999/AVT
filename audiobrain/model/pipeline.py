@@ -54,9 +54,9 @@ class AudioProcessingPipeline:
             sample_rate=sample_rate
         )
         
-        # Initialize AudioBrainCore transformer
-        self.brain = AudioBrainCore(config=config, device=self.device)
-        
+        self.brain = AudioBrainCore(config=config)
+        self.brain.to(self.device)
+                
         print(f"Pipeline ready: PANNs -> AudioBrainCore")
         print(f"  Input: Raw audio waveform")
         print(f"  Output: 512-dim contextualized latent vectors")
