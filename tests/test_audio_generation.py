@@ -17,7 +17,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audiobrain.model.pipeline import AudioProcessingPipeline
-from audiobrain.model.synthesizer import AudioSynthesizer
+from audiobrain.model.synthesizer import AudioMosaicSynthesizer as AudioSynthesizer
 
 def generate_sample_audio(output_path: str, duration: float = 5.0, sr: int = 22050):
     """Generate a simple sweeping sine wave for testing."""
