@@ -207,6 +207,4 @@ class AudioMosaicSynthesizer:
             'device': self.device
         }
 
-    def __repr__(self):
-        return f"AudioMosaicSynthesizer(db={len(self.audio_database)}, device={self.device})"
-    test_synthesizer()
+    
