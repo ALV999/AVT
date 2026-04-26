@@ -36,17 +36,22 @@ class AudioBrainCore(nn.Module):
         transformer: Encoder Transformer para secuenciación.
     """
 
-    def __init__(self, config: BrainConfig | None = None) -> None:
+    def __init__(self, config: BrainConfig | None = None, device: str | None = None) -> None:
         """
         Inicializar el modelo AudioBrainCore.
 
         Args:
             config: Configuración del modelo. Si es None, se usa BrainConfig() por defecto.
+            device: Dispositivo donde cargar el modelo ('cuda', 'mps', 'cpu'). 
+                    Si es None, se usa el definido en config o se auto-detecta.
         """
         super().__init__()
 
         # Configurar hiperparámetros
         self.config = config if config is not None else BrainConfig()
+        
+        # Determinar dispositivo
+        target_device = device if device is not None else self.config.device
         
         # Aplicar configuración de reproducibilidad si hay seed
         self.config.setup()
@@ -68,8 +73,10 @@ class AudioBrainCore(nn.Module):
             batch_first=self.config.batch_first,
         )
 
-        # Mover al dispositivo configurado
-        self.to(self.config.device)
+        # Mover al dispositivo determinado
+        self.to(target_device)
+        # Guardar el dispositivo usado en la config para referencia
+        self.config.device = target_device
 
     def forward(
         self,
