@@ -1,87 +1,67 @@
 """
-Audio validation utilities to ensure processing will succeed.
+Audio file validation module.
+Ensures input files are valid before processing to prevent runtime errors.
 """
 
 import os
-import librosa
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
+import soundfile as sf
 
 
 class AudioValidator:
-    """Validates audio files before processing to prevent pipeline failures."""
+    """Validates audio files before processing."""
+    
+    SUPPORTED_FORMATS = {'.wav', '.flac', '.ogg', '.mp3'}
+    MIN_DURATION = 1.0  # Minimum duration in seconds
     
     @staticmethod
-    def validate_file(filepath: str) -> Tuple[bool, str]:
+    def validate_files(file_paths: List[str]) -> List[str]:
         """
-        Validate a single audio file.
+        Validate a list of audio file paths.
         
-        Returns:
-            (is_valid, error_message)
-        """
-        path = Path(filepath)
-        
-        # Check file exists
-        if not path.exists():
-            return False, f"File not found: {filepath}"
-        
-        # Check extension
-        if path.suffix.lower() not in ['.wav', '.flac', '.mp3', '.ogg']:
-            return False, f"Unsupported format: {path.suffix}"
-        
-        # Try to load and check properties
-        try:
-            audio, sr = librosa.load(filepath, sr=None, mono=True, duration=1.0)
+        Args:
+            file_paths: List of file paths to validate.
             
-            if len(audio) == 0:
-                return False, "File is empty or silent"
-            
-            # Check for corruption (NaN or Inf values)
-            if not all(librosa.util.valid_audio(audio, mono=False)):
-                return False, "Audio contains invalid values (NaN/Inf)"
-                
-        except Exception as e:
-            return False, f"Failed to load file: {str(e)}"
-        
-        return True, ""
-    
-    @staticmethod
-    def validate_files(filepaths: List[str], min_total_duration: float = 30.0) -> Tuple[List[str], List[str]]:
-        """
-        Validate a list of audio files and check total duration.
-        
         Returns:
-            (valid_files, errors)
+            List of valid file paths.
+            
+        Raises:
+            ValueError: If any file is invalid.
         """
         valid_files = []
         errors = []
-        total_duration = 0.0
         
-        print(f"\n🔍 Validating {len(filepaths)} input files...")
+        for path in file_paths:
+            try:
+                AudioValidator._validate_file(path)
+                valid_files.append(path)
+            except Exception as e:
+                errors.append(f"{path}: {str(e)}")
         
-        for filepath in filepaths:
-            is_valid, error = AudioValidator.validate_file(filepath)
-            
-            if is_valid:
-                # Get full duration
-                try:
-                    audio, sr = librosa.load(filepath, sr=None, mono=True)
-                    duration = len(audio) / sr
-                    total_duration += duration
-                    valid_files.append(filepath)
-                    print(f"  ✅ {Path(filepath).name}: {duration:.2f}s")
-                except Exception as e:
-                    errors.append(f"{filepath}: {str(e)}")
-            else:
-                errors.append(f"{filepath}: {error}")
-                print(f"  ❌ {Path(filepath).name}: {error}")
+        if errors:
+            error_msg = "Invalid files found:\n" + "\n".join(errors)
+            raise ValueError(error_msg)
         
-        # Check total duration
-        if total_duration < min_total_duration:
-            errors.append(f"Total duration ({total_duration:.2f}s) is less than minimum required ({min_total_duration:.2f}s)")
-            print(f"\n⚠️  Warning: Total duration {total_duration:.2f}s < {min_total_duration:.2f}s required")
+        return valid_files
+    
+    @staticmethod
+    def _validate_file(file_path: str):
+        """Validate a single audio file."""
+        path = Path(file_path)
         
-        print(f"\n✓ Validation complete: {len(valid_files)}/{len(filepaths)} files valid")
-        print(f"  Total duration: {total_duration:.2f}s")
+        # Check if file exists
+        if not path.exists():
+            raise FileNotFoundError("File does not exist")
         
-        return valid_files, errors
+        # Check extension
+        if path.suffix.lower() not in AudioValidator.SUPPORTED_FORMATS:
+            raise ValueError(f"Unsupported format '{path.suffix}'. Supported: {AudioValidator.SUPPORTED_FORMATS}")
+        
+        # Check if file is readable and get duration
+        try:
+            info = sf.info(file_path)
+            if info.duration < AudioValidator.MIN_DURATION:
+                raise ValueError(f"Duration too short ({info.duration:.2f}s). Minimum: {AudioValidator.MIN_DURATION}s")
+        except Exception as e:
+            raise ValueError(f"Cannot read audio file: {str(e)}")

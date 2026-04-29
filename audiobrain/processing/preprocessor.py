@@ -1,123 +1,72 @@
 """
-Audio preprocessing utilities for cleaning and preparing input files.
+Audio preprocessing module.
+Normalizes, cleans, and prepares audio for feature extraction.
 """
 
 import numpy as np
 import librosa
-from typing import Tuple, Optional
+from typing import Tuple
 
 
 class AudioPreprocessor:
-    """Preprocesses audio files to ensure consistent quality and format."""
+    """Preprocesses audio files for consistent processing."""
     
-    @staticmethod
-    def remove_silence(
-        audio: np.ndarray, 
-        sr: int, 
-        top_db: float = 30.0,
-        frame_length: int = 2048,
-        hop_length: int = 512
-    ) -> np.ndarray:
+    def __init__(self, target_sr: int = 22050):
         """
-        Remove silent portions from audio.
+        Initialize preprocessor.
         
         Args:
-            audio: Input audio waveform
-            sr: Sample rate
-            top_db: Threshold in dB below peak to consider as silence
-            frame_length: Window length for energy calculation
-            hop_length: Hop size for energy calculation
-            
-        Returns:
-            Audio with silence removed
+            target_sr: Target sample rate for all audio.
         """
-        # Trim leading and trailing silence
-        audio_trimmed, _ = librosa.effects.trim(
-            audio, 
-            top_db=top_db, 
-            frame_length=frame_length, 
-            hop_length=hop_length
-        )
-        return audio_trimmed
+        self.target_sr = target_sr
     
-    @staticmethod
-    def normalize(audio: np.ndarray, target_peak: float = 0.9) -> np.ndarray:
+    def preprocess(self, audio_path: str) -> Tuple[np.ndarray, int]:
         """
-        Normalize audio to a target peak amplitude.
+        Load and preprocess an audio file.
         
         Args:
-            audio: Input audio waveform
-            target_peak: Target peak amplitude (0.0 to 1.0)
+            audio_path: Path to audio file.
             
         Returns:
-            Normalized audio
+            Tuple of (audio waveform, sample rate).
         """
-        peak = np.max(np.abs(audio))
-        if peak > 0:
-            audio = audio * (target_peak / peak)
-        return audio
+        # Load with target sample rate
+        audio, sr = librosa.load(audio_path, sr=self.target_sr, mono=True)
+        
+        # Normalize to [-1, 1] range
+        audio = self.normalize(audio)
+        
+        # Remove extreme silence at start/end
+        audio = self.trim_silence(audio)
+        
+        return audio, self.target_sr
     
     @staticmethod
-    def resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-        """
-        Resample audio to target sample rate.
-        
-        Args:
-            audio: Input audio waveform
-            orig_sr: Original sample rate
-            target_sr: Target sample rate
-            
-        Returns:
-            Resampled audio
-        """
-        if orig_sr == target_sr:
+    def normalize(audio: np.ndarray, target_db: float = -3.0) -> np.ndarray:
+        """Normalize audio to target dBFS."""
+        rms = np.sqrt(np.mean(audio ** 2))
+        if rms < 1e-6:
             return audio
         
-        return librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr)
+        target_rms = 10 ** (target_db / 20.0)
+        scale = target_rms / rms
+        normalized = audio * scale
+        
+        # Clip to prevent overflow
+        return np.clip(normalized, -1.0, 1.0)
     
     @staticmethod
-    def to_mono(audio: np.ndarray) -> np.ndarray:
-        """Convert stereo audio to mono."""
-        if len(audio.shape) == 1:
+    def trim_silence(audio: np.ndarray, threshold: float = 0.01) -> np.ndarray:
+        """Remove silence from start and end of audio."""
+        # Find non-silent regions
+        mask = np.abs(audio) > threshold
+        
+        if not mask.any():
             return audio
-        return librosa.to_mono(audio)
-    
-    @staticmethod
-    def preprocess(
-        filepath: str,
-        target_sr: int = 22050,
-        remove_silent: bool = True,
-        normalize_audio: bool = True
-    ) -> Tuple[np.ndarray, int]:
-        """
-        Full preprocessing pipeline for a single file.
         
-        Args:
-            filepath: Path to audio file
-            target_sr: Target sample rate
-            remove_silent: Whether to remove silence
-            normalize_audio: Whether to normalize
-            
-        Returns:
-            (processed_audio, sample_rate)
-        """
-        # Load file
-        audio, sr = librosa.load(filepath, sr=None, mono=False)
+        # Get first and last non-zero indices
+        indices = np.where(mask)[0]
+        start = indices[0]
+        end = indices[-1] + 1
         
-        # Convert to mono
-        audio = AudioPreprocessor.to_mono(audio)
-        
-        # Resample if needed
-        if sr != target_sr:
-            audio = AudioPreprocessor.resample(audio, sr, target_sr)
-            sr = target_sr
-        
-        # Remove silence
-        if remove_silent:
-            audio = AudioPreprocessor.remove_silence(audio, sr)
-        
-        # Normalize
-        if normalize_audio:
-            audio = AudioPreprocessor.normalize(audio)
-        
-        return audio, sr
+        return audio[start:end]
