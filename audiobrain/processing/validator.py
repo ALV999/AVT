@@ -1,67 +1,47 @@
-"""
-Audio file validation module.
-Ensures input files are valid before processing to prevent runtime errors.
-"""
-
+"""Audio file validation before processing."""
 import os
-from pathlib import Path
-from typing import List
-import soundfile as sf
-
+import librosa
+from typing import List, Tuple
 
 class AudioValidator:
-    """Validates audio files before processing."""
-    
-    SUPPORTED_FORMATS = {'.wav', '.flac', '.ogg', '.mp3'}
-    MIN_DURATION = 1.0  # Minimum duration in seconds
-    
     @staticmethod
-    def validate_files(file_paths: List[str]) -> List[str]:
+    def validate_files(file_paths: List[str], min_duration: float = 1.0) -> Tuple[bool, str]:
         """
-        Validate a list of audio file paths.
+        Validates a list of audio files.
         
         Args:
-            file_paths: List of file paths to validate.
+            file_paths: List of paths to audio files.
+            min_duration: Minimum duration in seconds required for each file.
             
         Returns:
-            List of valid file paths.
-            
-        Raises:
-            ValueError: If any file is invalid.
+            Tuple of (is_valid, message).
         """
-        valid_files = []
-        errors = []
+        if not file_paths:
+            return False, "No files provided"
         
+        valid_count = 0
         for path in file_paths:
+            if not os.path.exists(path):
+                return False, f"File not found: {path}"
+            
+            if not path.lower().endswith('.wav'):
+                return False, f"Invalid format (need .wav): {path}"
+            
             try:
-                AudioValidator._validate_file(path)
-                valid_files.append(path)
+                # Load just 1 second to check readability and estimate SR
+                audio, sr = librosa.load(path, sr=None, mono=True, duration=1.0)
+                
+                # If the file is shorter than 1s, librosa returns less samples
+                duration_sampled = len(audio) / sr
+                
+                # If we got less than requested, the file is short
+                if duration_sampled < 1.0:
+                    if duration_sampled < min_duration:
+                        return False, f"File too short ({duration_sampled:.2f}s < {min_duration}s): {path}"
+                
+                valid_count += 1
+                
             except Exception as e:
-                errors.append(f"{path}: {str(e)}")
+                return False, f"Cannot read {path}: {str(e)}"
         
-        if errors:
-            error_msg = "Invalid files found:\n" + "\n".join(errors)
-            raise ValueError(error_msg)
-        
-        return valid_files
-    
-    @staticmethod
-    def _validate_file(file_path: str):
-        """Validate a single audio file."""
-        path = Path(file_path)
-        
-        # Check if file exists
-        if not path.exists():
-            raise FileNotFoundError("File does not exist")
-        
-        # Check extension
-        if path.suffix.lower() not in AudioValidator.SUPPORTED_FORMATS:
-            raise ValueError(f"Unsupported format '{path.suffix}'. Supported: {AudioValidator.SUPPORTED_FORMATS}")
-        
-        # Check if file is readable and get duration
-        try:
-            info = sf.info(file_path)
-            if info.duration < AudioValidator.MIN_DURATION:
-                raise ValueError(f"Duration too short ({info.duration:.2f}s). Minimum: {AudioValidator.MIN_DURATION}s")
-        except Exception as e:
-            raise ValueError(f"Cannot read audio file: {str(e)}")
+        return True, f"Validated {valid_count}/{len(file_paths)} files successfully"
