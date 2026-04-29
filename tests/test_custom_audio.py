@@ -1,16 +1,8 @@
 """
-Test script for the full AudioBrain pipeline with user inference controls.
-Supports multiple input files, validation, and generation parameters.
+Test script for custom audio generation with user inference controls.
+Usage: python3 tests/test_custom_audio.py audio1.wav audio2.wav --temperature 0.7 --mode fluid
 """
-
-import os
-import sys
-import argparse
-import numpy as np
-import soundfile as sf
-import torch
-
-# Add project root to path
+import os, sys, argparse, torch, numpy as np, soundfile as sf, librosa
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audiobrain.model.pipeline import AudioProcessingPipeline
@@ -18,81 +10,82 @@ from audiobrain.model.synthesizer import AudioMosaicSynthesizer
 from audiobrain.processing.config import GenerationConfig
 from audiobrain.processing.validator import AudioValidator
 
-def run_custom_pipeline(input_files: list, config: GenerationConfig):
-    """Runs the complete audio generation pipeline with validation and config."""
+def run_custom_pipeline(input_files, args):
+    print(f"🔍 Validating {len(input_files)} input files...")
     
-    # 1. Validate Inputs
-    print("🛡️  Validating inputs...")
-    is_valid, message = AudioValidator.validate_files(input_files, min_duration=2.0)
+    # Debug: Print what we received
+    print(f"   Received paths: {input_files}")
+    
+    is_valid, msg = AudioValidator.validate_files(input_files)
     if not is_valid:
-        print(f"❌ Validation Failed: {message}")
+        print(f"❌ Error: Validation failed: {msg}")
         return False
-    print(f"✅ {message}")
+    print(f"✅ {msg}")
 
-    # 2. Setup Paths & Device
-    test_dir = os.path.join(os.path.dirname(__file__), "test_data")
-    os.makedirs(test_dir, exist_ok=True)
-    output_path = os.path.join(test_dir, "generated_output.wav")
-    
     device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"🚀 Device: {device}")
-    print(f"⚙️  Config: Temp={config.temperature}, Mode={config.mode}, Density={config.density}")
 
     try:
-        # 3. Initialize Components
         print("\n⚙️  Initializing components...")
-        # Note: Pipeline handles its own sample rate internally usually, or we pass target_sr
         processor = AudioProcessingPipeline(device=device)
         
-        # Synthesizer now takes sample_rate from config or defaults
-        synthesizer = AudioMosaicSynthesizer(
-            segment_duration=config.segment_duration,
-            sample_rate=22050, # Match pipeline default
-            device=device
-        )
+        # Use segment duration from config or default
+        seg_dur = getattr(args, 'segment_duration', 1.0)
+        synthesizer = AudioMosaicSynthesizer(segment_duration=seg_dur, device=device)
 
-        # 4. Process Inputs (Extract Features)
-        print(f"\n📥 Processing {len(input_files)} file(s)...")
-        all_latents = []
+        # Build configuration
+        config = GenerationConfig(
+            temperature=args.temperature,
+            density=args.density,
+            mode=args.mode,
+            seed=args.seed,
+            segment_duration=seg_dur
+        )
+        print(f"   Config: Temp={config.temperature}, Mode={config.mode}, Density={config.density}, Seed={config.seed}")
+
+        print(f"\n📥 Processing inputs...")
+        # Process all input files and concatenate latents? 
+        # For now, let's just process the first one to get a target sequence, 
+        # but build the DB from ALL files.
+        # Better approach: Process a dummy or combined signal for target length?
+        # Simplest for now: Target length based on total input duration
         
-        # Simple concatenation of latents for multiple inputs for now
-        # In a more advanced version, we might weight them differently
+        all_latents = []
+        total_duration = 0
+        
         for f in input_files:
-            print(f"  Processing: {os.path.basename(f)}")
+            print(f"   Extracting from {os.path.basename(f)}...")
             latents = processor.process_file(f)
             all_latents.append(latents)
-        
-        # Concatenate along sequence dimension (dim 1)
-        if len(all_latents) == 1:
-            latent_vectors = all_latents[0]
-        else:
-            latent_vectors = torch.cat(all_latents, dim=1)
             
-        print(f"✅ Total latent shape: {latent_vectors.shape}")
+            # Get duration for total time estimation
+            audio, sr = librosa.load(f, sr=None)
+            total_duration += len(audio)/sr
 
-        # 5. Synthesize
-        print("\n🎼 Synthesizing (k-NN Mosaicing)...")
-        # Pass the first file as reference for database building if needed, 
-        # but ideally we build DB from all inputs. 
-        # For this test, we build DB from the combined inputs implicitly or just the first one.
-        # To make it robust, let's pass all inputs to a hypothetical build step or rely on internal logic.
-        # Current synthesizer expects one source to build DB if none exists. 
-        # Let's pass the first file as the primary source for DB construction for simplicity in this test.
-        source_for_db = input_files[0] 
+        # Concatenate latents to form a long target sequence (simple approach)
+        # Shape: [batch, seq, dim] -> we want [1, total_seq, dim]
+        # Note: process_file returns [1, seq, 512] usually
+        if len(all_latents) == 1:
+            target_latents = all_latents[0]
+        else:
+            target_latents = torch.cat(all_latents, dim=1)
+            
+        print(f"✅ Total latent shape: {target_latents.shape} (approx {total_duration:.1f}s)")
 
+        print("\n🎼 Synthesizing...")
         output_audio, output_sr = synthesizer.synthesize_from_latent(
-            latent_vectors, 
-            source_for_db, 
-            pipeline=processor, 
-            config=config # Pass the new config object
+            target_latents,
+            input_files, # Pass list of files to build DB from all
+            pipeline=processor,
+            config=config
         )
 
-        # 6. Save Result
-        sf.write(output_path, output_audio, output_sr)
-        print(f"\n🎉 Success! Output: {output_path}")
+        out_path = "tests/test_data/generated_output.wav"
+        sf.write(out_path, output_audio, output_sr)
+        print(f"\n🎉 Success! Output: {out_path}")
         print(f"   Duration: {len(output_audio)/output_sr:.2f}s")
         return True
-        
+
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
@@ -100,23 +93,25 @@ def run_custom_pipeline(input_files: list, config: GenerationConfig):
         return False
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate audio with k-NN mosaicing.")
-    parser.add_argument("input_files", nargs="+", help="Input .wav files (1 to 10)")
+    parser = argparse.ArgumentParser(description="Generate audio with k-NN mosaicing")
+    parser.add_argument("inputs", nargs="+", help="Input .wav files (1 or more)")
     parser.add_argument("--temperature", type=float, default=0.5, help="Creativity (0.0-1.0)")
     parser.add_argument("--density", type=float, default=0.5, help="Segment density/glitch (0.0-1.0)")
-    parser.add_argument("--mode", type=str, default="fluid", choices=["fluid", "glitch", "evolving"])
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
-    parser.add_argument("--segment-duration", type=float, default=1.0, help="Segment duration in seconds")
-
+    parser.add_argument("--mode", choices=['fluid', 'glitch', 'evolving'], default='fluid')
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--segment-duration", type=float, default=1.0, help="Segment size in seconds")
+    
     args = parser.parse_args()
-
-    config = GenerationConfig(
-        temperature=args.temperature,
-        density=args.density,
-        mode=args.mode,
-        seed=args.seed,
-        segment_duration=args.segment_duration
-    )
-
-    success = run_custom_pipeline(args.input_files, config)
+    
+    # Expand wildcards if shell didn't (unlikely in bash but safe)
+    import glob
+    expanded_inputs = []
+    for pattern in args.inputs:
+        matches = glob.glob(pattern)
+        if matches:
+            expanded_inputs.extend(matches)
+        else:
+            expanded_inputs.append(pattern)
+    
+    success = run_custom_pipeline(expanded_inputs, args)
     sys.exit(0 if success else 1)
