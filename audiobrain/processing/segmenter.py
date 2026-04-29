@@ -1,74 +1,41 @@
-"""
-Audio segmentation module.
-Splits audio into segments with energy analysis for intelligent filtering.
-"""
-
+"""Intelligent audio segmentation with RMS energy calculation."""
 import numpy as np
 from typing import List, Tuple
-from dataclasses import dataclass
-
-
-@dataclass
-class AudioSegment:
-    """Represents an audio segment with metadata."""
-    audio: np.ndarray
-    energy: float
-    start_sample: int
-    end_sample: int
-
 
 class AudioSegmenter:
-    """Segments audio files and calculates energy metrics."""
-    
     def __init__(self, segment_duration: float = 1.0, sample_rate: int = 22050):
-        """
-        Initialize segmenter.
-        
-        Args:
-            segment_duration: Duration of each segment in seconds.
-            sample_rate: Sample rate of audio.
-        """
-        self.segment_duration = segment_duration
-        self.sample_rate = sample_rate
-        self.samples_per_segment = int(segment_duration * sample_rate)
+        self.segment_samples = int(segment_duration * sample_rate)
+        self.sr = sample_rate
     
-    def segment(self, audio: np.ndarray, min_energy: float = 0.01) -> List[AudioSegment]:
+    def segment(self, audio: np.ndarray, min_energy: float = 0.001) -> List[Tuple[np.ndarray, float]]:
         """
-        Split audio into segments, filtering by energy.
-        
-        Args:
-            audio: Audio waveform.
-            min_energy: Minimum RMS energy to include segment.
-            
-        Returns:
-            List of AudioSegment objects.
+        Divide el audio en segmentos.
+        min_energy bajado a 0.001 para aceptar señales más suaves.
         """
         segments = []
-        num_segments = len(audio) // self.samples_per_segment
+        num_segments = len(audio) // self.segment_samples
+        
+        print(f"  [Segmenter] Audio length: {len(audio)/self.sr:.2f}s, Expected segments: {num_segments}")
         
         for i in range(num_segments):
-            start = i * self.samples_per_segment
-            end = start + self.samples_per_segment
+            start = i * self.segment_samples
+            end = start + self.segment_samples
+            segment = audio[start:end]
             
-            segment_audio = audio[start:end]
-            energy = self.calculate_energy(segment_audio)
+            # Calcular energía RMS
+            energy = np.sqrt(np.mean(segment ** 2))
             
-            # Skip low-energy segments (silence)
+            # Debug: mostrar energía de los primeros 5 segmentos
+            if i < 5:
+                print(f"    Segment {i}: Energy={energy:.6f} (Threshold={min_energy})")
+            
             if energy >= min_energy:
-                segments.append(AudioSegment(
-                    audio=segment_audio,
-                    energy=energy,
-                    start_sample=start,
-                    end_sample=end
-                ))
+                segments.append((segment, energy))
+            else:
+                print(f"    Segment {i}: Skipped (Too quiet)")
         
+        print(f"  [Segmenter] Valid segments extracted: {len(segments)}/{num_segments}")
         return segments
     
-    @staticmethod
-    def calculate_energy(audio: np.ndarray) -> float:
-        """Calculate RMS energy of audio segment."""
-        return np.sqrt(np.mean(audio ** 2))
-    
-    def get_total_segments(self, audio_length: int) -> int:
-        """Get total number of segments for given audio length."""
-        return audio_length // self.samples_per_segment
+    def get_segment_count(self, audio: np.ndarray) -> int:
+        return len(audio) // self.segment_samples
