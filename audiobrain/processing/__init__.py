@@ -6,7 +6,7 @@ Provides validation, preprocessing, segmentation, and configuration for audio ge
 from audiobrain.processing.config import GenerationConfig
 from audiobrain.processing.validator import AudioValidator
 from audiobrain.processing.preprocessor import AudioPreprocessor
-from audiobrain.processing.segmenter import AudioSegmenter, AudioSegment
+from audiobrain.processing.segmenter import AudioSegmenter
 
 __all__ = [
     'GenerationConfig',
