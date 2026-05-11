@@ -1,82 +1,69 @@
-# Development Changelog
+# Development Changelog - AudioBrain
 
-All notable changes to the A/VT project during development will be documented in this file.
+This file is a short English development summary. For the detailed (Spanish) session log, see `docs/CHANGELOG_DEV.MD`.
 
-## [0.1.3] - 2024-01-XX
+## [Unreleased] - 2026-05-11
+
+### Docs
+
+- Reconciled changelog facts with the current code (component names, defaults, license).
+
+### Known Gaps
+
+- No dependency manifest (`pyproject.toml`/`requirements.txt`) or CI workflow is present yet; setup is not reproducible.
+
+## [0.1.3] - 2026-04-26
 
 ### Added
-- **Phase 3: Audio Synthesis by Mosaicing** ✅ COMPLETED
-  - `audiobrain/model/synthesizer.py`: `AudioSynthesizer` class
+
+- Phase 3: Audio synthesis by mosaicing (completed)
+  - `audiobrain/model/synthesizer.py`: `AudioMosaicSynthesizer`
+  - `audiobrain/model/generation_pipeline.py`: `AudioGenerationPipeline`
   - k-NN search in latent space for audio segment matching
   - Overlap-add crossfading for smooth transitions
-  - `synthesize_from_latent()` method for end-to-end generation
-  - `synthesize_from_file()` convenience method
-  
-- **Testing Infrastructure**
-  - `tests/` directory created
-  - `tests/test_audio_generation.py`: Full pipeline integration test
-    - Generates synthetic source audio (sweeping sine wave)
-    - Runs complete pipeline: PANNs → Transformer → k-NN Synthesis
-    - Saves output WAV file for verification
 
-### Changed
-- Updated `audiobrain/model/__init__.py` to export `AudioSynthesizer`
-- Updated `CHANGELOG_DEV.MD` with Phase 3 completion details
+- Test scripts
+  - `tests/test_audio_generation.py`: end-to-end generation script writing `tests/test_data/generated_output.wav`
 
-### Technical Details
-- **Input**: 512-dim latent vectors from `AudioBrainCore`
-- **Output**: Raw audio waveform (numpy array)
-- **Parameters**: Configurable `n_neighbors` and `crossfade_samples`
-- **Dependencies**: `librosa`, `scikit-learn`, `soundfile`
+### Technical Notes
+
+- Synthesizer defaults: `segment_duration=1.0`, `sample_rate=22050`, `crossfade_duration=0.1`
+- Generation pipeline defaults: `segment_duration=0.1`, `sample_rate=32000`, `crossfade_duration=0.02`
+- Dependencies implied by code: `torch`, `torchaudio`, `transformers`, `librosa`, `scikit-learn`, `soundfile`
 
 ### How to Test
+
 ```bash
 python tests/test_audio_generation.py
-# Output: tests/test_data/generated_output.wav
 ```
 
-## [0.1.2] - 2024-01-XX
+## [0.1.2] - 2026-03-31
 
 ### Added
-- **Phase 2: PANNs Integration** ✅ COMPLETED
-  - `audiobrain/model/feature_extractor.py`: `PANNsFeatureExtractor` class
-  - `audiobrain/model/pipeline.py`: `AudioProcessingPipeline` class
-  - Automatic download of PANNs CNN14 pretrained weights
-  - End-to-end processing: Raw Audio → PANNs → Transformer → Latent Vectors
 
-### Changed
-- Updated `audiobrain/model/__init__.py` to export new classes
-- Updated documentation with data flow diagram
+- Phase 2: PANNs feature extraction + processing pipeline (completed)
+  - `audiobrain/model/feature_extractor.py`: `PANNsFeatureExtractor`
+  - `audiobrain/model/pipeline.py`: `AudioProcessingPipeline`
 
-### Technical Details
-- **Model**: PANNs CNN14 (pretrained on AudioSet)
-- **Input**: Raw audio waveform (any sample rate, converted to 22050Hz)
-- **Output**: `[batch, seq_len, 512]` latent vectors
-- **Embedding Dim**: 2048 (PANNs) → 512 (Transformer)
-
-## [0.1.1] - 2024-01-XX
+## [0.1.1] - 2026-03-31
 
 ### Added
-- **Phase 1: Core Transformer Model** ✅ COMPLETED
-  - `audiobrain/model/core.py`: `AudioBrainCore` class
-  - `audiobrain/model/config.py`: `BrainConfig` dataclass
-  - `audiobrain/model/transformer.py`: `SoundscapeTransformer` and `ProjectionHead`
-  - Complete transformer architecture with 8 attention heads, 2 layers
 
-### Technical Details
-- **Framework**: PyTorch 2.0+
-- **Input**: `[batch, seq_len, 2048]` PANNs embeddings
-- **Output**: `[batch, seq_len, 512]` contextualized latent vectors
-- **Config**: d_model=512, nhead=8, num_layers=2, dim_feedforward=2048
+- Phase 1: Transformer model (completed)
+  - `audiobrain/model/core.py`: `AudioBrainCore`
+  - `audiobrain/model/config.py`: `BrainConfig`
+  - `audiobrain/model/transformer.py`: `SoundscapeTransformer`
+  - `audiobrain/model/projection.py`: `ProjectionHead`
 
-## [0.1.0] - 2024-01-XX
+## [0.1.0] - 2026-03-31
 
 ### Added
-- Initial project structure
-- Repository setup with MIT License
-- Basic README.md
+
+- Initial `audiobrain/` package structure
+- Repository setup with Apache-2.0 License
 
 ---
+
 **Legend:**
 - ✅ = Completed
 - 🚧 = In Progress

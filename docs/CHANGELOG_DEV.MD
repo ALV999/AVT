@@ -1,5 +1,18 @@
 # Changelog de Desarrollo - AudioBrain
 
+## [Unreleased] - 2026-05-11
+
+### Documentación
+
+- Aclarada la licencia del repositorio como Apache-2.0 (ver `LICENSE`).
+- Reconciliados nombres de componentes y parámetros por defecto con el código actual.
+- Marcado `CHANGELOG_DEV.MD` (raíz) como resumen en inglés; este documento queda como fuente detallada.
+
+### Notas de Parámetros (Estado Actual)
+
+- `AudioMosaicSynthesizer` (sintetizador): `segment_duration=1.0`, `sample_rate=22050`, `crossfade_duration=0.1`
+- `AudioGenerationPipeline` (pipeline): `segment_duration=0.1`, `sample_rate=32000`, `crossfade_duration=0.02`
+
 ## [0.1.3] - 2026-04-26
 
 ### Implementado - FASE 3: Síntesis de Audio por Mosaicing (COMPLETADO)
@@ -17,8 +30,8 @@
     - `save_audio()`: Guarda audio sintetizado a archivo .wav
     - `_crossfade_concatenate()`: Une segmentos con crossfading suave
   - Parámetros configurables:
-    - segment_duration: 0.1s por defecto (3200 samples @ 32kHz)
-    - crossfade_duration: 0.02s para transiciones suaves
+    - segment_duration: 1.0s por defecto (el pipeline usa 0.1s por defecto)
+    - crossfade_duration: 0.1s por defecto (el pipeline usa 0.02s por defecto)
     - k_neighbors: 5 mejores matches para variedad
   - Ventana de crossfade: coseno elevado para transiciones naturales
 
@@ -42,9 +55,9 @@
 #### Especificaciones Técnicas
 
 **Audio Mosaic Synthesizer:**
-- Segment duration: 0.1 segundos (configurable)
-- Sample rate: 32kHz (consistente con PANNs)
-- Crossfade: 0.02s con ventana de coseno elevado
+- Segment duration: 1.0s por defecto (pipeline: 0.1s)
+- Sample rate: 22050 por defecto (pipeline: 32kHz)
+- Crossfade: 0.1s por defecto (pipeline: 0.02s) con ventana de coseno elevado
 - k-NN search: Encuentra segmentos similares en espacio latent 512-dim
 - Estrategia: Selecciona aleatoriamente entre top-k para variedad
 
