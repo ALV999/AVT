@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 import os
 
-def generate_complex_soundscape(duration: float = 30.0, sr: int = 22050):
+def generate_complex_soundscape(duration: float = 30.0, sr: int = 32000):
     """Generates a rich 30s soundscape with multiple layers."""
     print(f"🎵 Generating {duration}s complex soundscape...")
     

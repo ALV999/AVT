@@ -1,213 +1,207 @@
-# A/VT - Prompt Maestro de Desarrollo
+# A/VT — Architecture Reference
 
-# Proyecto de Tesis: Audio/Visual Transformer
+## Project Overview
 
-## 1. CONTEXTO GENERAL DEL PROYECTO
+A/VT is a generative soundscape system that creates original audio compositions from user-provided samples. The system uses a Transformer model to learn latent representations of audio segments, then synthesizes new audio via k-NN mosaicing with crossfade blending.
 
-A/VT es un sistema generativo de paisajes sonoros que crea composiciones
-originales a partir de samples de audio proporcionados por el usuario,
-acompañadas de una visualización estructural en matriz ASCII de 63x63 caracteres.
+**Status**: All five core phases are complete, plus a post-processing audio effects module.
 
-Objetivos del Sistema:
+---
 
-1. Generar nuevas composiciones sonoras mediante reordenamiento inteligente de samples
-2. Visualizar la estructura sonora en tiempo real mediante matriz ASCII codificada
-3. Operar en entorno local con recursos moderados
+## Architecture
 
-Arquitectura Completa (4 Modulos):
+### Data Flow
 
-- Modulo 1: Extraccion de Features (PANNs) - Pendiente
-- Modulo 2: Modelo Transformer (CORE) - EN PROGRESO
-- Modulo 3: Sintesis por Mosaicing (k-NN) - Pendiente
-- Modulo 4: Visualizacion ASCII 63x63 - Pendiente
+```
+┌─────────────┐    ┌───────────────┐    ┌────────────────┐    ┌──────────────────┐
+│  Raw Audio  │ →  │ Feature Ext.  │ →  │  Transformer   │ →  │  k-NN Mosaicing  │ →  Output WAV
+│  (.wav)     │    │  (PANNs/AST)  │    │   Encoder      │    │  + Crossfade     │
+└─────────────┘    └───────────────┘    └────────────────┘    └──────────────────┘
+                       2048-dim            512-dim latents         │
+                                                                   ↓
+                                                          ┌──────────────────┐
+                                                          │  ASCII Matrix    │
+                                                          │  Visualization   │
+                                                          └──────────────────┘
+```
 
-## 2. FASE ACTUAL: FASE 1 - IMPLEMENTACION DEL MODELO
+---
 
-Objetivo de Esta Fase:
-Implementar el nucleo del modelo Transformer que aprende secuencias de embeddings
-y genera nuevas trayectorias en el espacio latente de 512 dimensiones.
+## Module 1: Feature Extraction (PANNs/AST)
 
-Alcance de Esta Fase - INCLUIDO:
+**Files**: `audiobrain/model/feature_extractor.py`, `audiobrain/model/pipeline.py`
 
-- ProjectionHead (2048 a 512)
-- SoundscapeTransformer
-- AudioBrainCore (clase principal)
-- Entrenamiento (train_step)
-- Generacion autoregresiva
+Extracts 2048-dimensional embeddings from raw audio using pretrained models.
 
-Alcance de Esta Fase - NO INCLUIDO:
+**Model loading priority** (first successful load wins):
+1. `MIT/ast-finetuned-audioset-10-10-0.4593` — AST, AudioSet (768-dim)
+2. `ntu-spml/distil-ast` — Distil-AST, AudioSet (768-dim)
+3. Manual CNN fallback (untrained, produces target_embedding_dim)
 
-- Carga de archivos de audio
-- Sintesis de audio final
-- Busqueda k-NN
-- Visualizacion ASCII
-- Integracion con PANNs real
+If the loaded model's output dimension differs from the target (default: 2048), a linear projection layer is added automatically.
 
-## 3. ESPECIFICACION DE INPUTS Y OUTPUTS
+**Key classes**:
+- `PANNsFeatureExtractor` — Extracts audio features from files or waveforms
+- `AudioProcessingPipeline` — Connects PANNs → AudioBrainCore in a single pipeline
 
-Etapa 1: Proyeccion (ProjectionHead)
-Input: embedding_panns (torch.Tensor, shape: [batch, 2048])
-Output: embedding_proyectado (torch.Tensor, shape: [batch, 512])
+**Dimensions**:
+| Stage | Shape |
+|-------|-------|
+| Input audio | Raw waveform, variable length |
+| Per-chunk embedding | `[768]` or `[2048]` |
+| Sequence output | `[1, seq_len, 2048]` |
+| After transformer | `[1, seq_len, 512]` |
 
-Etapa 2: Secuenciacion (SoundscapeTransformer)
-Input: secuencia_embeddings (torch.Tensor, shape: [batch, seq_len, 512])
-Output: secuencia_contextual (torch.Tensor, shape: [batch, seq_len, 512])
+---
 
-Etapa 3: Generacion (AudioBrainCore)
-Input: start_embedding (torch.Tensor, shape: [1, 1, 512])
-Output: generated_sequence (torch.Tensor, shape: [1, length, 512])
+## Module 2: Transformer Core Model
 
-Resumen de Dimensiones:
+**Files**: `audiobrain/model/core.py`, `audiobrain/model/projection.py`, `audiobrain/model/transformer.py`, `audiobrain/model/config.py`
 
-- batch_size: 8-32 (entrenamiento), 1 (inferencia)
-- seq_len: Numero de segmentos de 0.5s (ej. 60 = 30s de audio)
-- 2048: Dimension original de embeddings PANNs
-- 512: Dimension del espacio latente del Transformer
+### BrainConfig
 
-## 4. ARQUITECTURA TECNICA DETALLADA
+Configuration dataclass with auto device detection (CUDA → MPS → CPU).
 
-ProjectionHead:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `d_model` | 512 | Latent space dimension |
+| `nhead` | 8 | Attention heads |
+| `num_layers` | 2 | Encoder depth |
+| `dim_feedforward` | 2048 | FFN dimension |
+| `dropout` | 0.1 | Dropout rate |
+| `learning_rate` | 0.001 | Adam LR |
+| `embedding_dim_input` | 2048 | PANNs output dim |
+| `embedding_dim_latent` | 512 | Latent space dim |
+| `max_seq_len` | 512 | Max sequence length |
 
-- Funcion: Adaptar salida de PANNs al espacio del Transformer
-- Capas: Linear(2048, 512) -> LayerNorm -> Dropout(0.1)
-- Input: [batch, 2048]
-- Output: [batch, 512]
+### ProjectionHead
 
-SoundscapeTransformer:
+Adapts PANNs embeddings to the Transformer latent space.
 
-- Arquitectura: nn.TransformerEncoder
-- d_model: 512
-- nhead: 8
-- num_layers: 2
-- dim_feedforward: 2048
-- dropout: 0.1
-- batch_first: True
-- Input: [batch, seq_len, 512]
-- Output: [batch, seq_len, 512]
+```
+Linear(2048, 512) → LayerNorm → Dropout(0.1)
+Input:  [batch, seq_len, 2048]
+Output: [batch, seq_len, 512]
+```
 
-AudioBrainCore (Clase Principal):
-Metodos requeridos:
+### SoundscapeTransformer
 
-- **init**(config: BrainConfig): Inicializa capas y device
-- forward(embeddings, mask) -> Tensor: Forward pass completo
-- train_step(batch, optimizer, criterion) -> float: Un paso de entrenamiento
-- generate(start_emb, length, temperature) -> Tensor: Generacion autoregresiva
-- save_checkpoint(path) -> None: Guarda pesos del modelo
-- load_checkpoint(path) -> None: Carga pesos del modelo
+PyTorch `nn.TransformerEncoder` with 2 layers, 8 attention heads.
 
-## 5. ESPECIFICACIONES TECNICAS
+```
+Input:  [batch, seq_len, 512]
+Output: [batch, seq_len, 512]
+```
 
-Framework y Librerias:
+### AudioBrainCore
 
-- PyTorch: 2.0+
-- Python: 3.9+
-- Librerias permitidas: torch, numpy, dataclasses
-- Librerias NO permitidas en este modulo: librosa, soundfile, panns_inference
+Main class combining projection + transformer with training and generation methods.
 
-Requisitos de Codigo:
+| Method | Description |
+|--------|-------------|
+| `forward(x)` | Projection → Transformer |
+| `encode(x)` | Alias for forward() |
+| `train_step(batch, optim, criterion)` | Single step with gradient clipping |
+| `generate(start_emb, length, temp)` | Autoregressive generation |
+| `save_checkpoint(path)` | Persist weights + config |
+| `load_checkpoint(path)` | Restore from checkpoint |
 
-- Type hinting: Obligatorio en todas las funciones
-- Documentacion: Docstrings en formato Google style
-- Dispositivo: Manejo automatico de CUDA/MPS/CPU
-- Estabilidad: Gradient clipping (max_norm=1.0) en train_step
-- Validacion: Asserts o raise ValueError para dimensiones incorrectas
+**Generation**: Temperature-controlled autoregressive inference. At each step, the transformer sees the accumulated sequence and predicts the next latent vector.
 
-Configuracion (BrainConfig):
+**Parameters**: 7,355,904 total (all trainable).
 
-- d_model: int = 512
-- nhead: int = 8
-- num_layers: int = 2
-- dim_feedforward: int = 2048
-- dropout: float = 0.1
-- learning_rate: float = 0.001
-- device: str = 'cuda' si disponible, sino 'cpu'
-- max_seq_len: int = 512
+---
 
-## 6. ESTRUCTURA DE ARCHIVOS
+## Module 3: Mosaicing Synthesis (k-NN)
 
-audiobrain/
-**init**.py
-model/
-**init**.py
-config.py (BrainConfig dataclass)
-projection.py (ProjectionHead)
-transformer.py (SoundscapeTransformer)
-core.py (AudioBrainCore)
-docs/
-PROMPT_MASTER.md (este archivo)
-CONTEXT.md (estado del proyecto)
-CHANGELOG_DEV.md (registro de cambios)
-tests/
-test_projection.py
-test_transformer.py
-test_core.py
+**Files**: `audiobrain/model/synthesizer.py`, `audiobrain/model/generation_pipeline.py`
 
-## 7. EJEMPLO DE USO ESPERADO
+### AudioMosaicSynthesizer
 
-import torch
-from audiobrain.model import AudioBrainCore, BrainConfig
+Builds a database of audio segments with their latent vectors, then matches target latents to the nearest database segments via k-NN search.
 
-config = BrainConfig(
-d_model=512,
-nhead=8,
-num_layers=2,
-learning_rate=0.001,
-device='mps' if torch.backends.mps.is_available() else 'cpu'
-)
+**Synthesis modes**:
+| Mode | Behavior |
+|------|----------|
+| `fluid` | Random selection from top-k neighbors |
+| `evolving` | Always picks the nearest neighbor |
+| `glitch` | Shortened crossfade for abrupt transitions |
 
-model = AudioBrainCore(config)
-model = model.to(config.device)
+**Parameters**: temperature (creativity), density (energy threshold for segment selection), crossfade duration.
 
-batch_size = 4
-seq_len = 60
-dummy_input = torch.randn(batch_size, seq_len, 2048).to(config.device)
+**Crossfade**: Raised-cosine window (Hann) for smooth segment transitions.
 
-output = model(dummy_input)
+### AudioGenerationPipeline
 
-# output.shape debe ser (batch_size, seq_len, 512)
+Convenience wrapper combining feature extraction, transformer processing, and synthesis into a single interface.
 
-optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-criterion = nn.MSELoss()
-loss = model.train_step(dummy_input, optimizer, criterion)
+---
 
-start_emb = torch.randn(1, 1, 512).to(config.device)
-generated = model.generate(start_emb, length=60, temperature=0.8)
+## Module 4: ASCII Visualization
 
-# generated.shape debe ser (1, 60, 512)
+**Files**: `audiobrain/model/visualizer.py`
 
-## 8. INSTRUCCIONES PARA EL ASISTENTE DE CODIGO
+### AudioBrainVisualizer
 
-Al Iniciar Cada Sesion:
+Renders latent vectors `[1, 63, 512]` as a 63×63 cosine self-similarity matrix using ANSI-colored ASCII characters.
 
-1. Leer este archivo PROMPT_MASTER.md completo
-2. Leer docs/CONTEXT.md para estado actual del proyecto
-3. Leer docs/CHANGELOG_DEV.md para ver ultima tarea completada
+**Features**:
+- Multiple character sets (dots, blocks, braille)
+- Color schemes (viridis, plasma, inferno, grayscale, thermal)
+- Modes: `similarity`, `distance`, `binary`
+- Methods: `render()`, `render_with_stats()`, `to_grid()`
+- Cross-platform color support via `colorama` with auto-fallback
 
-Al Generar Codigo:
+---
 
-1. Priorizar claridad sobre optimizacion prematura
-2. Incluir validacion de dimensiones en todos los forward pass
-3. Incluir comentarios que referencien este documento
-4. Mantener codigo modular para facilitar pruebas unitarias
+## Module 5: CLI
 
-Al Completar una Tarea:
+**Files**: `audiobrain/cli.py`
 
-1. Actualizar docs/CHANGELOG_DEV.md con tarea, archivos, descripcion
-2. Actualizar docs/CONTEXT.md si el estado del proyecto cambio
+| Command | Description |
+|---------|-------------|
+| `generate` | Generate audio from source using database |
+| `visualize` | Render ASCII matrix of audio latent space |
+| `train` | Train AudioBrainCore on synthetic data |
+| `info` | Display system and model metadata |
 
-Restricciones Estrictas:
+---
 
-- NO modificar archivos fuera de audiobrain/model/ en esta fase
-- NO importar librerias de audio (librosa, soundfile, panns_inference)
-- NO implementar k-NN, sintesis o visualizacion (fases posteriores)
-- NO cambiar hiperparametros arquitectonicos sin consultar
+## Audio Effects (Bonus Module)
 
-## 9. PROXIMAS FASES (Referencia)
+**Files**: `audiobrain/effects/`
 
-Fase 1: Modelo Transformer - EN PROGRESO
-Fase 2: Pipeline de Audio (PANNs + carga WAV) - Pendiente
-Fase 3: Sintesis por Mosaicing (k-NN + crossfade) - Pendiente
-Fase 4: Visualizacion ASCII 63x63 - Pendiente
-Fase 5: Integracion y CLI - Pendiente
+Post-processing effects applied to generated audio:
 
-FIN DEL PROMPT MAESTRO
+| Effect | Description |
+|--------|-------------|
+| `EffectChain` | Ordered pipeline of effects |
+| `bitcrush` | Bit-depth reduction |
+| `pitch_up` / `pitch_down` | Pitch shifting |
+| `flanger` | Flanger modulation |
+| `glitch` | Glitch/stutter effects |
+| `distort` | Waveform distortion |
+| `delay` | Echo/delay |
+
+---
+
+## Input/Output Summary
+
+| Stage | Input | Output |
+|-------|-------|--------|
+| Feature Extractor | Raw `.wav` audio | `[seq_len, 2048]` |
+| ProjectionHead | `[batch, seq, 2048]` | `[batch, seq, 512]` |
+| SoundscapeTransformer | `[batch, seq, 512]` | `[batch, seq, 512]` |
+| k-NN Synthesis | `[1, seq, 512]` + audio DB | Raw waveform |
+| Visualization | `[1, 63, 512]` | 63×63 ASCII string |
+
+## Testing
+
+- **32 unit tests** in `audiobrain/tests/` (pytest-compatible + raw Python runner)
+- Training verification: `src/experiments/train.py`
+- Integration tests: `tests/test_audio_generation.py`
+
+```bash
+python audiobrain/tests/run_tests.py
+pytest audiobrain/tests/
+```

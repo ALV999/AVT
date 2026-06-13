@@ -157,3 +157,131 @@ class AudioBrainCore(nn.Module):
             f"  total_parameters={self.count_parameters():,}\n"
             f")"
         )
+
+    def train_step(
+        self,
+        batch: torch.Tensor,
+        optimizer: torch.optim.Optimizer,
+        criterion: nn.Module,
+    ) -> float:
+        """
+        Un paso de entrenamiento con gradient clipping.
+
+        Ver Sección 5 de context.md para especificación de entrenamiento.
+
+        La función de pérdida es reconstrucción auto-supervisada:
+        el transformer aprende a preservar la estructura del embedding
+        proyectado a través del espacio latente.
+
+        Args:
+            batch: Embeddings de PANNs con shape [batch, seq_len, 2048].
+            optimizer: Optimizador (Adam recomendado).
+            criterion: Función de pérdida (MSELoss recomendado).
+
+        Returns:
+            Valor de pérdida (float) para logging.
+        """
+        self.train()
+        optimizer.zero_grad()
+
+        # Mover batch al dispositivo del modelo
+        x = batch.to(self.config.device)
+
+        # Forward pass completo: proyección + transformer
+        projected = self.projection(x)  # [batch, seq_len, 512]
+        output = self.transformer(projected)  # [batch, seq_len, 512]
+
+        # Pérdida de reconstrucción
+        loss = criterion(output, projected)
+
+        # Backprop con gradient clipping
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), self.config.max_norm)
+        optimizer.step()
+
+        return loss.item()
+
+    @torch.no_grad()
+    def generate(
+        self,
+        start_emb: torch.Tensor,
+        length: int = 60,
+        temperature: float = 0.8,
+    ) -> torch.Tensor:
+        """
+        Generación autoregresiva de secuencias en el espacio latente.
+
+        Ver Sección 3 (Etapa 3) de context.md para especificación.
+
+        Partiendo de un embedding inicial, genera una secuencia completa
+        aplicando iterativamente el transformer y añadiendo ruido
+        controlado por temperatura.
+
+        Args:
+            start_emb: Embedding inicial con shape [1, 1, 512].
+            length: Longitud total de la secuencia a generar.
+            temperature: Control de creatividad (0 = determinístico,
+                         1 = máxima variabilidad).
+
+        Returns:
+            Secuencia generada con shape [1, length, 512].
+        """
+        self.eval()
+
+        # Validar dimensiones del embedding inicial
+        assert start_emb.shape[-1] == self.config.d_model, (
+            f"start_emb debe tener d_model={self.config.d_model}, "
+            f"recibido shape={start_emb.shape}"
+        )
+
+        generated: list[torch.Tensor] = [start_emb.to(self.config.device)]
+
+        for _ in range(length - 1):
+            # Construir secuencia acumulada
+            seq = torch.cat(generated, dim=1)  # [1, current_len, 512]
+
+            # Pasar por el transformer
+            output = self.transformer(seq)  # [1, current_len, 512]
+
+            # Tomar el último embedding como predicción del siguiente
+            next_emb = output[:, -1:, :]  # [1, 1, 512]
+
+            # Añadir ruido controlado por temperatura
+            if temperature > 0:
+                noise = torch.randn_like(next_emb) * temperature * 0.1
+                next_emb = next_emb + noise
+
+            generated.append(next_emb)
+
+        return torch.cat(generated, dim=1)  # [1, length, 512]
+
+    def save_checkpoint(self, path: str) -> None:
+        """
+        Guardar pesos del modelo a disco.
+
+        Ver Sección 4 de context.md para especificación.
+
+        Args:
+            path: Ruta donde guardar el checkpoint (ej. 'checkpoints/model.pt').
+        """
+        import os
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        torch.save(
+            {
+                "model_state_dict": self.state_dict(),
+                "config": self.config,
+            },
+            path,
+        )
+
+    def load_checkpoint(self, path: str) -> None:
+        """
+        Cargar pesos del modelo desde disco.
+
+        Ver Sección 4 de context.md para especificación.
+
+        Args:
+            path: Ruta del checkpoint a cargar.
+        """
+        checkpoint = torch.load(path, map_location=self.config.device, weights_only=False)
+        self.load_state_dict(checkpoint["model_state_dict"])

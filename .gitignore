@@ -46,6 +46,10 @@ __pycache__/
 .Python
 *.so
 
+.claude
+.deepseek
+.deepseek/
+
 # Cache directories
 .mypy_cache/
 .pytest_cache/

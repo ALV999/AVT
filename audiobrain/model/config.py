@@ -54,6 +54,9 @@ class BrainConfig:
     # Reproducibilidad
     seed: Optional[int] = None
 
+    # Longitud máxima de secuencia
+    max_seq_len: int = 512
+
     def __post_init__(self) -> None:
         """Inicializar device y verificar consistencia de hiperparámetros."""
         # Auto-detectar device si no se especifica

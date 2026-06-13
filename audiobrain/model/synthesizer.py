@@ -7,13 +7,12 @@ import torch
 import numpy as np
 from typing import List, Optional, Tuple
 from pathlib import Path
-import librosa
 import soundfile as sf
 import tempfile
 import os
 
 # Import new processing modules
-from audiobrain.processing.config import GenerationConfig
+from audiobrain.processing.config import GenerationConfig, PreprocessingConfig
 from audiobrain.processing.validator import AudioValidator
 from audiobrain.processing.preprocessor import AudioPreprocessor
 from audiobrain.processing.segmenter import AudioSegmenter
@@ -27,7 +26,7 @@ class AudioMosaicSynthesizer:
     
     def __init__(self,
                  segment_duration: float = 1.0,
-                 sample_rate: int = 22050,
+                 sample_rate: int = 32000,
                  crossfade_duration: float = 0.1,
                  device: Optional[str] = None):
         
@@ -47,7 +46,7 @@ class AudioMosaicSynthesizer:
         self.energy_database: List[float] = []
         
         # Initialize processing tools
-        self.preprocessor = AudioPreprocessor(target_sr=sample_rate)
+        self.preprocessor = AudioPreprocessor(PreprocessingConfig(target_sr=sample_rate))
         self.segmenter = AudioSegmenter(segment_duration=segment_duration, sample_rate=sample_rate)
         
         print(f"AudioMosaicSynthesizer initialized on {self.device}")
@@ -66,7 +65,7 @@ class AudioMosaicSynthesizer:
         is_valid, msg = AudioValidator.validate_files(audio_files, min_duration=self.segment_duration)
         if not is_valid:
             raise ValueError(f"Validation failed: {msg}")
-        print(f"  ✅ {msg}")
+        print(f"  [OK] {msg}")
         
         self.audio_database = []
         self.energy_database = []
@@ -80,8 +79,10 @@ class AudioMosaicSynthesizer:
             print(f"  Processing [{i+1}/{len(audio_files)}]: {Path(audio_path).name}")
             
             try:
-                # Load and preprocess
-                audio_raw, sr = librosa.load(audio_path, sr=None, mono=True)
+                # Load and preprocess (use soundfile instead of librosa)
+                audio_raw, sr = sf.read(audio_path)
+                if audio_raw.ndim > 1:
+                    audio_raw = audio_raw.mean(axis=1)  # mono
                 audio_proc, _ = self.preprocessor.preprocess(audio_raw, sr)
                 
                 # Segment with energy calculation
@@ -117,7 +118,7 @@ class AudioMosaicSynthesizer:
         
         if latent_list:
             self.latent_database = torch.stack(latent_list).to(self.device)
-            print(f"\n✓ Database built: {segments_extracted} segments")
+            print(f"\n[OK] Database built: {segments_extracted} segments")
             print(f"  Latent shape: {self.latent_database.shape}")
         else:
             raise ValueError("Failed to build database. No valid segments extracted.")
@@ -133,11 +134,10 @@ class AudioMosaicSynthesizer:
         if config is None:
             config = GenerationConfig()
         
-        # Update crossfade if density implies glitch mode (shorter crossfades)
         if config.mode == 'glitch':
-            self.crossfade_samples = int(self.crossfade_samples * 0.2) # Very short crossfade
+            self.crossfade_samples = int(self.crossfade_samples * 0.2)
 
-        print(f"\n🎼 Starting Synthesis (Mode: {config.mode}, Temp: {config.temperature})...")
+        print(f"\n[Generating] Starting Synthesis (Mode: {config.mode}, Temp: {config.temperature})...")
         print(f"  Target shape: {target_latents.shape}")
 
         if pipeline is not None and self.latent_database is None:
@@ -147,9 +147,10 @@ class AudioMosaicSynthesizer:
         if self.latent_database is not None:
             return self._synthesize_knn(target_latents, config)
         else:
-            print("  ⚠️  No DB found. Falling back to sequential mapping.")
-            # Fallback for single file if DB failed
-            audio_raw, sr = librosa.load(source_audio_paths[0], sr=self.sample_rate, mono=True)
+            print("  [WARNING] No DB found. Falling back to sequential mapping.")
+            audio_raw, sr = sf.read(source_audio_paths[0])
+            if audio_raw.ndim > 1:
+                audio_raw = audio_raw.mean(axis=1)
             audio_proc, _ = self.preprocessor.preprocess(audio_raw, sr)
             return self._synthesize_sequential(target_latents, audio_proc)
 
@@ -163,14 +164,7 @@ class AudioMosaicSynthesizer:
         synthesized_segments = []
         db_size = self.latent_database.shape[0]
         
-        # Determine k based on density (higher density = more neighbors to choose from? 
-        # Actually, let's use density to filter low energy segments in glitch mode)
-        effective_k = max(1, int(5 * (1.0 - config.density))) # Low density -> fewer choices (more random?)
-        # Let's invert: High density = more options (standard k=5), Low density = restrictive?
-        # Better interpretation: Density = how many segments per second? 
-        # Let's stick to Temperature for randomness, Density for Energy Threshold.
-        
-        energy_threshold = 0.01 * (1.0 - config.density) # High density allows quieter sounds
+        energy_threshold = 0.01 * (1.0 - config.density)
         
         print(f"  Searching {db_size} segments (Temp={config.temperature}, Density={config.density})...")
         
@@ -179,17 +173,13 @@ class AudioMosaicSynthesizer:
                 target = target_latents[i:i+1, :]
                 distances = torch.norm(self.latent_database - target, dim=1)
                 
-                # Filter by energy if needed (Glitch mode might want all, Fluid might want smooth)
                 valid_indices = [idx for idx, e in enumerate(self.energy_database) if e >= energy_threshold]
                 if not valid_indices:
-                    valid_indices = list(range(db_size)) # Fallback
+                    valid_indices = list(range(db_size))
                 
                 valid_distances = distances[valid_indices]
                 
-                # Temperature scaling: Higher temp -> flatter distribution -> more random choice
-                # We simulate this by expanding the candidate pool or adding noise to distances
                 if config.temperature > 0.5:
-                    # Add noise to distances to make selection less greedy
                     noise_scale = (config.temperature - 0.5) * 2.0
                     noise = torch.randn_like(valid_distances) * noise_scale
                     valid_distances = valid_distances + noise
@@ -197,13 +187,9 @@ class AudioMosaicSynthesizer:
                 k_to_select = min(5, len(valid_indices))
                 _, indices_local = torch.topk(valid_distances, k_to_select, largest=False)
                 
-                # Select from top k
                 if config.mode == 'evolving':
-                    # Prefer sequential progression in energy or index? 
-                    # Simple evolving: just pick the best match (greedy)
                     selected_idx_local = indices_local[0].item()
                 else:
-                    # Random among top k based on temperature
                     selected_idx_local = indices_local[torch.randint(0, len(indices_local), (1,))].item()
                 
                 global_idx = valid_indices[selected_idx_local]
@@ -260,7 +246,7 @@ class AudioMosaicSynthesizer:
     def save_audio(self, audio: np.ndarray, output_path: str):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         sf.write(output_path, audio, self.sample_rate)
-        print(f"✓ Saved: {output_path}")
+        print(f"[OK] Saved: {output_path}")
 
     def get_database_info(self) -> dict:
         return {

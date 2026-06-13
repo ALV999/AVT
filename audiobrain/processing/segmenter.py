@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Tuple
 
 class AudioSegmenter:
-    def __init__(self, segment_duration: float = 1.0, sample_rate: int = 22050):
+    def __init__(self, segment_duration: float = 1.0, sample_rate: int = 32000):
         self.segment_samples = int(segment_duration * sample_rate)
         self.sr = sample_rate
     

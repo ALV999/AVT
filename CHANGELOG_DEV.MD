@@ -2,6 +2,76 @@
 
 All notable changes to the A/VT project during development will be documented in this file.
 
+## [0.2.0] - 2026-05-26
+
+### Added
+
+- **Sample rate unification**: All modules now default to 32kHz (PANNs native)
+  - `synthesizer.py`, `preprocessor.py`, `segmenter.py` updated from 22.05kHz
+  - Test scripts (`generate_*.py`, `test_audio_generation.py`) updated accordingly
+- **Unit test suite** (`audiobrain/tests/`)
+  - `run_tests.py`: 32 tests covering ProjectionHead, SoundscapeTransformer, AudioBrainCore
+  - `test_projection.py`, `test_transformer.py`, `test_core.py`: pytest-compatible test classes
+  - Tests: shape validation, dimension mismatch, determinism, gradient flow, checkpoint roundtrip, loss decrease
+- **PANNs model loading** (`audiobrain/model/feature_extractor.py`)
+  - Priority-ordered model loading: tries MIT AST (AudioSet) → Distil-AST → manual CNN fallback
+  - Dynamic output dimension detection with automatic linear projection to target dimension
+- **Fase 4: ASCII Visualization** (`audiobrain/model/visualizer.py`)
+  - `AudioBrainVisualizer`: Renders latent vectors as 63×63 self-similarity matrix
+  - Cosine similarity mapping to 10-character gradient ramp
+  - `render()`, `render_with_stats()`, `to_grid()` methods
+  - `visualize_latents()` convenience function
+- **Fase 5: CLI** (`audiobrain/cli.py`)
+  - Subcommands: `generate`, `visualize`, `train`, `info`
+  - Full argparse interface with all generation parameters
+  - Glob pattern expansion for source/database files
+  - Checkpoint save after training
+- **Module exports**: Visualizer and CLI exposed in package `__init__.py`
+
+### Changed
+
+- MPS device auto-detection improved in `config.py`
+- Test scripts use uniform 32kHz sample rate
+- `feature_extractor.py` now uses `target_embedding_dim` instead of `embedding_dim`
+
+### Verification
+
+- Unit tests: 32/32 passed
+- CLI `info` command: displays system and model metadata
+- Visualizer: correct 63×63 ASCII grid with cosine similarity matrix
+
+---
+
+## [0.1.5] - 2026-05-26
+
+### Added
+
+- **Training loop** (`audiobrain/model/core.py`)
+  - `train_step(batch, optimizer, criterion)`: Self-supervised reconstruction training with gradient clipping
+  - `generate(start_emb, length, temperature)`: Autoregressive latent sequence generation
+  - `save_checkpoint(path)`: Model weights + config persistence
+  - `load_checkpoint(path)`: Checkpoint restoration with device mapping
+- **Training verification script** (`src/experiments/train.py`)
+  - 50-epoch training loop on dummy PANNs embeddings
+  - Checkpoint roundtrip validation
+  - Autoregressive generation shape and determinism tests
+- **Dependency manifest** (`requirements.txt`)
+  - Pinned versions for torch, torchaudio, transformers, librosa, soundfile, numpy, scikit-learn
+- **BrainConfig**: Added `max_seq_len: int = 512` field
+
+### Changed
+
+- **`src/config.py`**: Replaced with deprecation notice pointing to canonical `audiobrain/model/config.py`
+
+### Verification
+
+- Model: 7,355,904 parameters initialized successfully
+- Training: Loss decreased 0.183 → 0.015 over 50 epochs (CPU)
+- Checkpoint: Save/load roundtrip verified (weight-perfect match)
+- Generation: Correct output shape `[1, 60, 512]`, deterministic at temperature=0
+
+---
+
 ## [0.1.4] - 2026-04-29
 
 ### Added

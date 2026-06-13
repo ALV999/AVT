@@ -1,5 +1,6 @@
 """Audio file validation before processing."""
-import os, librosa
+import os
+import soundfile as sf
 from typing import List, Tuple
 
 class AudioValidator:
@@ -15,9 +16,8 @@ class AudioValidator:
             if not path.lower().endswith('.wav'):
                 return False, f"Invalid format (need .wav): {path}"
             try:
-                # Load just 1 second to check validity
-                audio, sr = librosa.load(path, sr=None, mono=True, duration=1.0)
-                duration = len(audio) / sr
+                info = sf.info(path)
+                duration = info.duration
                 if duration < min_duration:
                     return False, f"File too short ({duration:.2f}s < {min_duration}s): {path}"
                 valid_count += 1

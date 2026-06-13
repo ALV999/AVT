@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from audiobrain.model.pipeline import AudioProcessingPipeline
 from audiobrain.model.synthesizer import AudioMosaicSynthesizer as AudioSynthesizer
 
-def generate_sample_audio(output_path: str, duration: float = 5.0, sr: int = 22050):
+def generate_sample_audio(output_path: str, duration: float = 5.0, sr: int = 32000):
     """Generate a simple sweeping sine wave for testing."""
     print(f"🎵 Generating sample audio ({duration}s at {sr}Hz)...")
     
@@ -66,7 +66,7 @@ def run_full_pipeline():
             latent_vectors, 
             source_path, 
             n_neighbors=5, 
-            crossfade_samples=4410  # 0.2s crossfade at 22050Hz
+            crossfade_samples=6400  # 0.2s crossfade at 32000Hz
         )
         
         # Step 5: Save result

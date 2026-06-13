@@ -37,7 +37,7 @@ class AudioGenerationPipeline:
     def __init__(self,
                  database_files: Optional[List[str]] = None,
                  config: Optional[BrainConfig] = None,
-                 segment_duration: float = 0.1,
+                 segment_duration: float = 1.0,
                  sample_rate: int = 32000,
                  crossfade_duration: float = 0.02,
                  max_database_segments: int = 1000,
@@ -108,7 +108,8 @@ class AudioGenerationPipeline:
     def generate(self,
                 source_audio: Union[str, Path],
                 duration: Optional[float] = None,
-                k_neighbors: int = 5) -> tuple:
+                k_neighbors: int = 5,
+                effect_chain = None) -> tuple:
         """
         Generate new audio from a source audio file
         
@@ -116,6 +117,7 @@ class AudioGenerationPipeline:
             source_audio: Path to source audio file
             duration: Optional duration to process (None = full audio)
             k_neighbors: Number of nearest neighbors for synthesis
+            effect_chain: Optional EffectChain to apply after synthesis
             
         Returns:
             Tuple of (synthesized_audio, latent_vectors):
@@ -126,7 +128,7 @@ class AudioGenerationPipeline:
         if not source_path.exists():
             raise FileNotFoundError(f"Source audio not found: {source_path}")
         
-        if self.synthesizer.segment_latents is None:
+        if self.synthesizer.latent_database is None:
             raise ValueError(
                 "Database not built! Call build_database() first or provide "
                 "database_files during initialization."
@@ -138,7 +140,19 @@ class AudioGenerationPipeline:
         _, latent_vectors = self.processing_pipeline.process_audio(source_path, duration)
         
         # Step 2: Synthesize audio from latent vectors
-        synthesized_audio = self.synthesizer.synthesize(latent_vectors, k=k_neighbors)
+        from audiobrain.processing.config import GenerationConfig
+        config = GenerationConfig(temperature=0.6, density=1.0, mode='fluid')
+        synthesized_audio, out_sr = self.synthesizer.synthesize_from_latent(
+            latent_vectors,
+            [str(source_path)],
+            pipeline=self.processing_pipeline,
+            config=config,
+        )
+        
+        # Step 3: Apply effects chain if provided
+        if effect_chain is not None:
+            print(f"  Applying effects: {effect_chain}")
+            synthesized_audio = effect_chain.apply(synthesized_audio, out_sr)
         
         return synthesized_audio, latent_vectors
     
@@ -146,7 +160,8 @@ class AudioGenerationPipeline:
                          source_audio: Union[str, Path],
                          output_path: Union[str, Path],
                          duration: Optional[float] = None,
-                         k_neighbors: int = 5):
+                         k_neighbors: int = 5,
+                         effect_chain=None):
         """
         Generate audio from source and save to file
         
@@ -159,7 +174,8 @@ class AudioGenerationPipeline:
         synthesized_audio, _ = self.generate(
             source_audio,
             duration=duration,
-            k_neighbors=k_neighbors
+            k_neighbors=k_neighbors,
+            effect_chain=effect_chain,
         )
         
         self.synthesizer.save_audio(synthesized_audio, output_path)

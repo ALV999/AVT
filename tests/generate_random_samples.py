@@ -8,7 +8,7 @@ import numpy as np
 import soundfile as sf
 import random
 
-def generate_random_sample(duration: float, sample_rate: int = 22050) -> np.ndarray:
+def generate_random_sample(duration: float, sample_rate: int = 32000) -> np.ndarray:
     """Generates a random audio snippet with varying waveform and modulation."""
     t = np.linspace(0, duration, int(sample_rate * duration))
     
@@ -75,7 +75,7 @@ def main():
         filename = f"sample_{i:02d}.wav"
         filepath = os.path.join(output_dir, filename)
         
-        sf.write(filepath, audio, 22050)
+        sf.write(filepath, audio, 32000)
         generated_files.append(filepath)
         
         print(f"  ✅ Saved: {filename} ({duration:.2f}s)")
