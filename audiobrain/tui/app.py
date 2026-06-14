@@ -1,561 +1,1198 @@
-"""AudioBrain TUI — terminal user interface for generative soundscapes."""
-
+#!/usr/bin/env python3
+"""AudioBrain TUI — Terminal User Interface for Generative Soundscapes."""
 from __future__ import annotations
-
 from pathlib import Path
-
+from typing import Optional
+import io, os, sys, subprocess
 import numpy as np
 import torch
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.screen import Screen
 from textual.widgets import (
-    Button,
-    DirectoryTree,
-    Footer,
-    Header,
-    Input,
-    Label,
-    ProgressBar,
-    Select,
-    Static,
+    Button, Checkbox, Footer, Header, Input,
+    Label, ListItem, ListView, Markdown, ProgressBar, Rule, Select, Static,
 )
-
-from audiobrain.effects import (
-    EffectChain,
-    bitcrush,
-    delay,
-    distort,
-    flange,
-    glitch,
-    pitch_down,
-    pitch_up,
-)
-from audiobrain.model.visualizer import CHAR_RAMPS, COLOR_SCHEMES
 from audiobrain.processing.config import GenerationConfig, PreprocessingConfig
+from audiobrain.effects import EffectChain
+from audiobrain.model.visualizer import CHAR_RAMPS, COLOR_SCHEMES
 
-# ── Registry ──────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# ASCII Logo
+# ═══════════════════════════════════════════════════════════════
+AUDIOBRAIN_LOGO = """
+ █████╗       ██╗   ██╗    ████████╗
+██╔══██╗      ██║   ██║    ╚══██╔══╝
+███████║      ██║   ██║       ██║
+██╔══██║      ╚██╗ ██╔╝       ██║
+██║  ██║       ╚████╔╝        ██║
+╚═╝  ╚═╝        ╚═══╝         ╚═╝
+  Audio / Visual Transformer
+"""
 
-EFFECT_MAP = {
-    "bitcrush": bitcrush,
-    "delay": delay,
-    "distort": distort,
-    "flanger": flange,
-    "glitch": glitch,
-    "pitch-down": pitch_down,
-    "pitch-up": pitch_up,
+# ═══════════════════════════════════════════════════════════════
+# Effect Registry
+# ═══════════════════════════════════════════════════════════════
+EFFECT_REGISTRY = {
+    "bitcrush": {"label": "Bitcrush", "description": "Lo-fi bit-depth reduction"},
+    "delay": {"label": "Delay", "description": "Echo with feedback"},
+    "distort": {"label": "Distortion", "description": "Tanh overdrive"},
+    "flanger": {"label": "Flanger", "description": "Sweeping comb filter"},
+    "glitch": {"label": "Glitch", "description": "Stochastic stutter"},
+    "pitch-down": {"label": "Pitch ↓", "description": "Lower pitch"},
+    "pitch-up": {"label": "Pitch ↑", "description": "Raise pitch"},
+}
+EFFECT_PARAMS = {
+    "bitcrush":   {"bits": (2, 16, 8), "mix": (0.0, 1.0, 0.5)},
+    "delay":      {"time_ms": (20, 1000, 200), "feedback": (0.0, 1.0, 0.3), "mix": (0.0, 1.0, 0.4)},
+    "distort":    {"drive": (1, 20, 4), "mix": (0.0, 1.0, 0.5)},
+    "flanger":    {"depth_ms": (1, 10, 3), "rate_hz": (0.1, 2.0, 0.3), "mix": (0.0, 1.0, 0.5)},
+    "glitch":     {"intensity": (0.0, 1.0, 0.3), "mix": (0.0, 1.0, 0.6)},
+    "pitch-down": {"semitones": (1, 24, 7), "mix": (0.0, 1.0, 0.7)},
+    "pitch-up":   {"semitones": (1, 24, 7), "mix": (0.0, 1.0, 0.7)},
 }
 
-EQ = [
-    ("Raw", "raw"),
-    ("Warm", "warm"),
-    ("Bright", "bright"),
-    ("Dark", "dark"),
-    ("Airy", "airy"),
-]
-NORM = [("Peak", "peak"), ("RMS", "rms"), ("None", "none")]
-STEREO = [("Mono", "mono"), ("Left", "left"), ("Right", "right"), ("Stereo", "stereo")]
-MODE = [("Fluid", "fluid"), ("Glitch", "glitch"), ("Evolving", "evolving")]
-COLORS_SEL = [(k.title(), k) for k in COLOR_SCHEMES]
-CHARS_SEL = [(k.title(), k) for k in CHAR_RAMPS]
+PARAM_LABELS = {
+    "bits":"Bits","mix":"Mix","time_ms":"Time ms","feedback":"Feedback",
+    "drive":"Drive","depth_ms":"Depth ms","rate_hz":"Rate Hz",
+    "intensity":"Intensity","semitones":"Semitones",
+}
+
+EQ = [("Raw","raw"),("Warm","warm"),("Bright","bright"),("Dark","dark"),("Airy","airy")]
+NORM = [("Peak","peak"),("RMS","rms"),("None","none")]
+STEREO = [("Mono","mono"),("Left","left"),("Right","right"),("Stereo","stereo")]
+MODE = [("Fluid","fluid"),("Glitch","glitch"),("Evolving","evolving")]
+
+# ═══════════════════════════════════════════════════════════════
+# Home Screen
+# ═══════════════════════════════════════════════════════════════
+class HomeScreen(Screen):
+    """Home screen with ASCII logo and main menu."""
+    BINDINGS = [
+        Binding("1", "start", "Start"),
+        Binding("2", "docs", "Docs"),
+        Binding("3", "about", "About"),
+        Binding("4", "quit", "Quit"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Container(id="home-container"):
+            with Vertical(id="home-content"):
+                yield Static(AUDIOBRAIN_LOGO, id="logo")
+                with Vertical(id="menu"):
+                    yield Button("▶ Start", id="btn-start", variant="primary")
+                    yield Button(" Docs", id="btn-docs", variant="default")
+                    yield Button("ℹ About", id="btn-about", variant="default")
+                    yield Button("✕ Quit", id="btn-quit", variant="error")
+        yield Footer()
+
+    def action_start(self):
+        self.app.push_screen("workspace")
+
+    def action_docs(self):
+        self.app.push_screen("docs")
+
+    def action_about(self):
+        self.app.push_screen("about")
+
+    def action_quit(self):
+        self.app.exit()
+
+    @on(Button.Pressed, "#btn-start")
+    def on_start(self):
+        self.action_start()
+
+    @on(Button.Pressed, "#btn-docs")
+    def on_docs(self):
+        self.action_docs()
+
+    @on(Button.Pressed, "#btn-about")
+    def on_about(self):
+        self.action_about()
+
+    @on(Button.Pressed, "#btn-quit")
+    def on_quit(self):
+        self.action_quit()
 
 
 # ═══════════════════════════════════════════════════════════════
+# Docs Screen
+# ═══════════════════════════════════════════════════════════════
+class DocsScreen(Screen):
+    """Documentation screen."""
+    BINDINGS = [Binding("escape", "back", "Back")]
+
+    DOCS_MD = """\
+# AudioBrain — Parameter Guide
+
+## Synthesis
+
+### Mode
+- **Fluid** — smooth continuous transitions
+- **Glitch** — abrupt fragmented jumps
+- **Evolving** — gradual drift between states
+
+### Temperature
+- `0.0` = deterministic (same output every time)
+- `1.0` = maximum randomness and surprise
+
+### Density
+- `0.0` = sparse with silence between segments
+- `1.0` = full coverage, no gaps
+
+### Segment
+- Duration of each audio slice in seconds
+- Shorter = more grains, finer texture
+
+### Crossfade
+- Overlap between segments for smooth joins
+- Higher = smoother but can wash out detail
+
+### Seed
+- Integer for reproducible results
+- Same seed + temp=0 = identical output
+
+## Preprocessing
+
+### Sample Rate
+- `32000` = PANNs native, best quality
+- `16000` = smaller files, faster
+
+## Effects
+
+| Effect    | Parameters                    |
+|-----------|-------------------------------|
+| Bitcrush  | bits (2–16), mix (0–1)       |
+| Delay     | time_ms, feedback, mix       |
+| Distortion| drive (1–20), mix (0–1)      |
+| Flanger   | depth_ms, rate_hz, mix       |
+| Glitch    | intensity (0–1), mix (0–1)   |
+| Pitch ↓   | semitones (1–24), mix (0–1)  |
+| Pitch ↑   | semitones (1–24), mix (0–1)  |
+
+## Shortcuts
+
+| Key | Action      |
+|-----|-------------|
+| h   | Home        |
+| g   | Generate    |
+| c   | Clear FX    |
+| q   | Quit        |
+| Esc | Cancel/Back |
+"""
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        with ScrollableContainer(id="docs-scroll"):
+            yield Markdown(self.DOCS_MD)
+        with Horizontal(id="docs-footer"):
+            yield Button("← Back", id="btn-back")
+        yield Footer()
+
+    def action_back(self):
+        self.app.pop_screen()
+
+    @on(Button.Pressed, "#btn-back")
+    def on_back(self):
+        self.action_back()
 
 
-class AudioBrainTUI(App):
-    """AudioBrain generative soundscape TUI."""
+# ═══════════════════════════════════════════════════════════════
+# About Screen
+# ═══════════════════════════════════════════════════════════════
+class AboutScreen(Screen):
+    """About screen."""
+    BINDINGS = [Binding("escape", "back", "Back")]
 
-    CSS = """
-    #left   { width: 28; border: solid $primary-background; padding: 0 1; }
-    #center { width: 1fr; border: solid $primary-background; }
-    #right  { width: 30; border: solid $primary-background; padding: 0 1; overflow-y: auto; }
-    #fx-bar { height: 5; border: solid $primary-background; padding: 0 1; }
-    #fx-btns { width: 20; }
-    #actions { height: 3; padding: 0 1; }
-    #strips { height: 9; }
-    #viz-panel { height: 1fr; padding: 0 1; }
-    #effects-label { height: 4; padding: 0 1; }
-    #strip-1, #strip-2, #strip-3 { height: 3; padding: 0 1; }
-    .section-title { text-style: bold; color: $text-muted; padding: 1 0 0 0; }
-    Select { width: 100%; }
-    Input { width: 100%; }
-    Button { margin: 0 1 0 0; }
-    """
+    ABOUT_MD = """\
+# About AudioBrain TUI
 
+**Version:** 0.4.0
+**Date:** 2026-06-13
+
+AudioBrain TUI is a terminal interface for the A/VT
+(Audio/Visual Transformer) generative soundscape system.
+
+## Architecture
+```
+Audio → PANNs (2048) → Transformer (512) → k-NN → Audio
+```
+
+## Technology
+- **Textual** — Python TUI framework
+- **PyTorch + Transformers** — HuggingFace
+- **Librosa, SoundFile, NumPy**
+
+## Features
+- File management
+- Preprocessing controls
+- Synthesis parameters
+- Audio effects chain
+- HTML visualization export
+
+**License:** MIT
+"""
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        with ScrollableContainer(id="about-scroll"):
+            yield Markdown(self.ABOUT_MD)
+        with Horizontal(id="about-footer"):
+            yield Button("← Back", id="btn-back")
+        yield Footer()
+
+    def action_back(self):
+        self.app.pop_screen()
+
+    @on(Button.Pressed, "#btn-back")
+    def on_back(self):
+        self.action_back()
+
+
+# ═══════════════════════════════════════════════════════════════
+# File Browser Modal
+# ═══════════════════════════════════════════════════════════════
+def _pick_audio_file(start_dir: str | None = None) -> str | None:
+    """Open native system file dialog for selecting an audio file."""
+    start = start_dir or str(Path.home())
+    if sys.platform == "darwin":
+        script = (
+            'set theFile to POSIX path of (choose file of type {"public.audio"} '
+            f'default location (POSIX file "{start}"))\n'
+            'return theFile'
+        )
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    elif sys.platform == "win32":
+        ps = (
+            'Add-Type -AssemblyName System.Windows.Forms; '
+            '$f = New-Object System.Windows.Forms.OpenFileDialog; '
+            '$f.Filter = "Audio files (*.wav;*.mp3;*.flac)|*.wav;*.mp3;*.flac"; '
+            f'$f.InitialDirectory = "{start}"; '
+            'if ($f.ShowDialog() -eq "OK") { $f.FileName }'
+        )
+        r = subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    else:
+        r = subprocess.run(
+            ["zenity", "--file-selection", f"--filename={start}/",
+             "--file-filter=Audio files (*.wav *.mp3 *.flac) | *.wav *.mp3 *.flac"],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _pick_save_file(start_path: str = "output.wav") -> str | None:
+    """Open native save dialog for output path."""
+    start = str(Path(start_path).absolute())
+    if sys.platform == "darwin":
+        folder = str(Path(start).parent)
+        name = Path(start).name
+        script = (
+            f'set theFile to POSIX path of (choose file name '
+            f'default name "{name}" default location (POSIX file "{folder}"))\n'
+            'return theFile'
+        )
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    elif sys.platform == "win32":
+        ps = (
+            'Add-Type -AssemblyName System.Windows.Forms; '
+            '$f = New-Object System.Windows.Forms.SaveFileDialog; '
+            '$f.Filter = "WAV files (*.wav)|*.wav"; '
+            f'$f.FileName = "{start}"; '
+            'if ($f.ShowDialog() -eq "OK") { $f.FileName }'
+        )
+        r = subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    else:
+        r = subprocess.run(
+            ["zenity", "--file-selection", "--save", f"--filename={start}",
+             "--file-filter=WAV files (*.wav) | *.wav"],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+
+
+# ═══════════════════════════════════════════════════════════════
+# Workspace Screen
+# ═══════════════════════════════════════════════════════════════
+class WorkspaceScreen(Screen):
+    """Main workspace."""
     BINDINGS = [
+        Binding("h", "home", "Home"),
         Binding("g", "generate", "Generate"),
-        Binding("r", "render", "Render"),
-        Binding("c", "cycle_colors", "Colors"),
-        Binding("h", "cycle_chars", "Chars"),
-        Binding("x", "clear_fx", "Clear FX"),
-        Binding("q", "quit", "Quit"),
+        Binding("c", "clear_fx", "Clear FX"),
+        Binding("escape", "escape_handler", "Cancel/Back"),
     ]
 
     def __init__(self):
         super().__init__()
         self._source_files: list[str] = []
         self._db_files: list[str] = []
+        self._enabled_effects: dict[str, bool] = {}
+        self._effect_params: dict[str, dict] = {}
+        self._is_generating = False
+        self._cancel_requested = False
+        self._audio_buffer: np.ndarray | None = None
+        self._sample_rate: int = 32000
         self._latents = None
-        self._waveform = None
-        self._effects_list: list[str] = []
-        self._color_idx = 0
-        self._char_idx = 0
-
-    # ── Compose ───────────────────────────────────────────────
+        self._play_process = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
-        with Horizontal():
-            # ── LEFT: Files ──
-            with Vertical(id="left"):
-                yield Label("SOURCE", classes="section-title")
-                yield DirectoryTree(Path.cwd(), id="file-tree")
-                yield Label("No source selected", id="source-label")
-                yield Label("DB: 0 files", id="db-count")
-                yield Button("Add to DB", id="btn-add-db")
-                yield Button("Clear DB", id="btn-clear-db")
+        # ── TOP ROW: Commands | Files | Generate ──
+        with Horizontal(id="workspace-top"):
+            # LEFT: Commands
+            with Vertical(id="left-panel"):
+                yield Label("COMMANDS", classes="section-title")
+                yield Button("Load Source", id="btn-load", variant="primary")
+                yield Button("Clear DB", id="btn-clear-db", variant="error")
+                yield Button("Docs", id="btn-docs-ws", variant="default")
+                yield Static("", id="source-info")
+                yield Static("", id="db-info")
 
-            # ── CENTER: Visualization ──
-            with Vertical(id="center"):
-                yield Label("Latent Spectrogram + Chladni", classes="section-title")
-                yield Static(id="viz-panel")
+            # MIDDLE: File list (ListView)
+            with Vertical(id="right-panel"):
+                yield Label("FILES", classes="section-title")
+                yield ListView(id="file-list")
 
-            # ── RIGHT: Controls ──
-            with Vertical(id="right"):
-                # Preprocessing
-                yield Label("PREPROCESSING", classes="section-title")
-                yield Label("Sample Rate")
-                yield Input(value="32000", id="sr")
-                yield Label("Gain (dB)")
-                yield Input(value="0.0", id="gain")
-                yield Label("EQ")
-                yield Select(EQ, value="raw", id="eq")
-                yield Label("Normalization")
-                yield Select(NORM, value="peak", id="norm")
-                yield Label("Stereo")
-                yield Select(STEREO, value="mono", id="stereo")
+            # RIGHT: Output + Generate in 2 columns
+            with Vertical(id="gen-panel"):
+                yield Label("GENERATE", classes="section-title")
+                with Horizontal(id="gen-grid"):
+                    with Vertical(classes="gen-col"):
+                        yield Label("Output:")
+                        with Horizontal(id="outpath-row"):
+                            yield Input(value="output.wav", id="outpath", placeholder="output.wav")
+                            yield Button("...", id="btn-browse-out", variant="default")
+                        yield Button("▶ Generate", id="btn-generate", variant="success")
+                    with Vertical(classes="gen-col"):
+                        yield Label("View Output:")
+                        yield Button("View", id="btn-view", variant="primary")
+                        with Vertical(id="post-gen"):
+                            yield Button("■ Stop", id="btn-stop", variant="error", disabled=True)
+                            yield Button("▶ Play", id="btn-play", variant="primary", disabled=True)
+                yield ProgressBar(total=100, show_eta=False, id="progress")
 
-                # Synthesis
-                yield Label("SYNTHESIS", classes="section-title")
-                yield Label("Mode")
-                yield Select(MODE, value="fluid", id="mode")
-                yield Label("Temperature")
-                yield Input(value="0.5", id="temp")
-                yield Label("Density")
-                yield Input(value="1.0", id="dens")
-                yield Label("Segment (s)")
-                yield Input(value="1.0", id="seg")
-                yield Label("Crossfade (s)")
-                yield Input(value="0.1", id="xfade")
-                yield Label("k-NN")
-                yield Input(value="5", id="knn")
-                yield Label("Max DB segs")
-                yield Input(value="500", id="maxseg")
-                yield Label("Seed")
-                yield Input(value="42", id="seed")
+        # ── BOTTOM ROW: Prep+Synth | Effects ─
+        with Horizontal(id="controls-row"):
+            # LEFT: Preprocessing + Synthesis
+            with ScrollableContainer(id="prep-synth-col"):
+                with Vertical(id="prep-section"):
+                    yield Label("PREPROCESSING", classes="section-title")
+                    with Horizontal(classes="prep-grid"):
+                        with Vertical(classes="prep-col"):
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Sample Rate:")
+                                yield Input(value="32000", id="sr", placeholder="Hz")
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Gain (dB):")
+                                yield Input(value="0.0", id="gain", placeholder="dB")
+                            with Horizontal(classes="prep-row"):
+                                yield Label("EQ:")
+                                yield Select(EQ, value="raw", id="eq")
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Colors:")
+                                yield Select(
+                                    [(k.title(), k) for k in COLOR_SCHEMES.keys()],
+                                    value="ocean", id="colors", prompt="Colors"
+                                )
+                        with Vertical(classes="prep-col"):
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Norm:")
+                                yield Select(NORM, value="peak", id="norm")
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Stereo:")
+                                yield Select(STEREO, value="mono", id="stereo")
+                            with Horizontal(classes="prep-row"):
+                                yield Label("Chars:")
+                                yield Select(
+                                    [(k.title(), k) for k in CHAR_RAMPS.keys()],
+                                    value="ascii", id="chars", prompt="Chars"
+                                )
 
-                # Output
-                yield Label("OUTPUT", classes="section-title")
-                yield Label("Output path")
-                yield Input(value="output.wav", id="outpath")
+                with Vertical(id="synth-section"):
+                    yield Label("SYNTHESIS", classes="section-title")
+                    with Horizontal(classes="synth-grid"):
+                        with Vertical(classes="synth-col"):
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Mode:")
+                                yield Select(
+                                    [("Fluid", "fluid"), ("Glitch", "glitch"), ("Evolving", "evolving")],
+                                    value="fluid", id="mode"
+                                )
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Temp:")
+                                yield Input(value="0.5", id="temp", placeholder="0.0-1.0")
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Segment:")
+                                yield Input(value="1.0", id="seg", placeholder="s")
+                        with Vertical(classes="synth-col"):
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Density:")
+                                yield Input(value="1.0", id="dens", placeholder="0.0-1.0")
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Xfade:")
+                                yield Input(value="0.1", id="xfade", placeholder="s")
+                            with Horizontal(classes="synth-row"):
+                                yield Label("Seed:")
+                                yield Input(value="42", id="seed", placeholder="Seed")
 
-                # Visualization
-                yield Label("VISUALIZATION", classes="section-title")
-                yield Label("Colors")
-                yield Select(COLORS_SEL, value="ocean", id="colors")
-                yield Label("Chars")
-                yield Select(CHARS_SEL, value="ascii", id="chars")
-
-        # ── Effects bar ──
-        with Horizontal(id="fx-bar"):
-            yield Static("Effects: none", id="effects-label")
-            with Vertical(id="fx-btns"):
-                for ef_name in EFFECT_MAP:
-                    yield Button(f"+{ef_name}", id=f"fx-{ef_name}")
-
-        # ── Actions ──
-        with Horizontal(id="actions"):
-            yield Button("▶ Generate", id="btn-generate", variant="success")
-            yield Button("👁 Render", id="btn-render", variant="primary")
-            yield Button("■ Stop", id="btn-stop", variant="error")
-            yield ProgressBar(total=100, show_eta=False, id="progress")
-
-        # ── Footer strips ──
-        with Vertical(id="strips"):
-            yield Static(" Oscilloscope: [dim]no data[/dim]", id="strip-1")
-            yield Static(" Waveform: [dim]no data[/dim]", id="strip-2")
-            yield Static(" Spectrogram: [dim]no data[/dim]", id="strip-3")
+            # RIGHT: Effects (checkbox + params in bordered box)
+            with ScrollableContainer(id="fx-col"):
+                with Vertical(id="fx-section"):
+                    yield Label("EFFECTS", classes="section-title")
+                    for fx_name, fx_info in EFFECT_REGISTRY.items():
+                        with Vertical(classes="fx-item"):
+                            yield Checkbox(fx_info["label"], id=f"fx-{fx_name}")
+                            params = EFFECT_PARAMS.get(fx_name, {})
+                            if params:
+                                with Horizontal(classes="fx-params"):
+                                    for pname, (pmin, pmax, pdef) in params.items():
+                                        plabel = PARAM_LABELS.get(pname, pname)
+                                        yield Label(plabel, classes="fx-param-label")
+                                        yield Input(
+                                            value=str(pdef),
+                                            id=f"fxp-{fx_name}-{pname}",
+                                            placeholder=f"{pmin}–{pmax}",
+                                            disabled=True,
+                                        )
+                    yield Static("", id="fx-status")
 
         yield Footer()
 
-    # ── Actions ───────────────────────────────────────────────
+    def action_home(self):
+        self.app.pop_screen()
 
     def action_generate(self):
-        self._run_pipeline(generate=True)
+        if not self._is_generating:
+            self._run_pipeline()
 
-    def action_render(self):
-        self._run_pipeline(generate=False)
+    def action_escape_handler(self):
+        if self._is_generating:
+            self._cancel_requested = True
+            self.notify("Cancelling...", severity="warning")
+        else:
+            self.app.pop_screen()
 
     def action_clear_fx(self):
-        self._effects_list.clear()
-        self.query_one("#effects-label", Static).update("Effects: [dim]none[/dim]")
+        self._enabled_effects.clear()
+        self._effect_params.clear()
+        for fx_name in EFFECT_REGISTRY:
+            cb = self.query_one(f"#fx-{fx_name}", Checkbox)
+            cb.value = False
+            for pname in EFFECT_PARAMS.get(fx_name, {}):
+                inp = self.query_one(f"#fxp-{fx_name}-{pname}", Input)
+                inp.disabled = True
+        self._update_fx_status()
 
-    def action_cycle_colors(self):
-        keys = list(COLOR_SCHEMES.keys())
-        self._color_idx = (self._color_idx + 1) % len(keys)
-        self.query_one("#colors", Select).value = keys[self._color_idx]
-        self._refresh_viz()
-
-    def action_cycle_chars(self):
-        keys = list(CHAR_RAMPS.keys())
-        self._char_idx = (self._char_idx + 1) % len(keys)
-        self.query_one("#chars", Select).value = keys[self._char_idx]
-        self._refresh_viz()
-
-    # ── Events ────────────────────────────────────────────────
-
-    @on(DirectoryTree.FileSelected, "#file-tree")
-    def on_file_select(self, event: DirectoryTree.FileSelected):
-        path = str(event.path)
-        if path.lower().endswith(".wav"):
+    # ── File loading ─────────────────────────────────────────────
+    @on(Button.Pressed, "#btn-load")
+    def on_load(self):
+        path = _pick_audio_file()
+        if path:
             self._source_files = [path]
-            self.query_one("#source-label", Label).update(
-                f"Source: [bold]{Path(path).name}[/bold]"
-            )
-            self.action_render()
+            self._db_files = list(set(self._db_files + [path]))
+            self._update_info()
+            self.notify(f"Loaded: {Path(path).name}")
 
-    @on(Button.Pressed, "#btn-add-db")
-    def on_add_db(self):
-        if self._source_files:
-            self._db_files.extend(self._source_files)
-            self._db_files = list(set(self._db_files))
-        self.query_one("#db-count", Label).update(
-            f"DB: [bold]{len(self._db_files)} files[/bold]"
-        )
+    @on(Button.Pressed, "#btn-docs-ws")
+    def on_docs_ws(self):
+        self.app.push_screen("docs")
 
+    @on(Button.Pressed, "#btn-browse-out")
+    def on_browse_out(self):
+        current = self.query_one("#outpath", Input).value or "output.wav"
+        path = _pick_save_file(current)
+        if path:
+            self.query_one("#outpath", Input).value = path
+
+    # ── Database ─────────────────────────────────────────────────
     @on(Button.Pressed, "#btn-clear-db")
     def on_clear_db(self):
         self._db_files.clear()
-        self.query_one("#db-count", Label).update("DB: [dim]cleared[/dim]")
+        self._update_info()
+        self.notify("Database cleared")
 
+    # ── Generate / Stop / Play ───────────────────────────────────
     @on(Button.Pressed, "#btn-generate")
     def on_gen(self):
         self.action_generate()
 
-    @on(Button.Pressed, "#btn-render")
-    def on_ren(self):
-        self.action_render()
-
     @on(Button.Pressed, "#btn-stop")
     def on_stop(self):
-        self.query_one("#progress", ProgressBar).update(progress=0)
+        if self._is_generating:
+            self._cancel_requested = True
+            self._is_generating = False
+            self.query_one("#btn-generate", Button).disabled = False
+            self.query_one("#btn-stop", Button).disabled = True
+            self.notify("Cancelled", severity="warning")
+        elif hasattr(self, '_play_process') and self._play_process is not None:
+            self._play_process.kill()
+            self._play_process = None
+            self.query_one("#btn-stop", Button).disabled = True
+            self.notify("Playback stopped")
 
-    @on(Button.Pressed)
-    def on_fx_button(self, event: Button.Pressed):
-        bid = event.button.id or ""
-        if bid.startswith("fx-"):
-            name = bid.replace("fx-", "")
-            if name in EFFECT_MAP:
-                self._effects_list.append(name)
-                display = (
-                    " → ".join(f"{i + 1}.{n}" for i, n in enumerate(self._effects_list))
-                    if self._effects_list
-                    else "none"
-                )
-                self.query_one("#effects-label", Static).update(
-                    f"Effects: [bold]{display}[/bold]"
-                )
+    @on(Button.Pressed, "#btn-view")
+    def on_view(self):
+        """Open the generated HTML file in the default browser."""
+        outpath = self.query_one("#outpath", Input).value or "output.wav"
+        html_path = str(Path(outpath).with_suffix(".html"))
+        if not Path(html_path).exists():
+            self.notify("No output to view — generate first", severity="warning")
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", html_path])
+        elif sys.platform == "win32":
+            os.startfile(html_path)
+        else:
+            subprocess.Popen(["xdg-open", html_path])
+        self.notify("Opening visualization...")
 
-    @on(Select.Changed)
-    def on_select_change(self, event: Select.Changed):
-        if event.select.id in ("colors", "chars"):
-            self._refresh_viz()
+    @on(Button.Pressed, "#btn-play")
+    def on_play(self):
+        if self._audio_buffer is None:
+            self.notify("Nothing to play — generate first", severity="warning")
+            return
+        import tempfile
+        import soundfile as sf
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, self._audio_buffer.astype(np.float32), self._sample_rate)
+            self._play_file = f.name
+        if sys.platform == "darwin":
+            self._play_process = subprocess.Popen(["afplay", self._play_file])
+        elif sys.platform == "win32":
+            self._play_process = subprocess.Popen(
+                ["start", "/min", "wmplayer", self._play_file], shell=True
+            )
+        else:
+            self._play_process = subprocess.Popen(["xdg-open", self._play_file])
+        self.notify("Playing...")
+        self.query_one("#btn-stop", Button).disabled = False
 
-    # ── Helpers ───────────────────────────────────────────────
+    # ── Effects ──────────────────────────────────────────────────
+    @on(Checkbox.Changed)
+    def on_fx_change(self, event: Checkbox.Changed):
+        cid = event.checkbox.id or ""
+        if cid.startswith("fx-"):
+            name = cid.replace("fx-", "")
+            self._enabled_effects[name] = event.value
+            for pname in EFFECT_PARAMS.get(name, {}):
+                inp = self.query_one(f"#fxp-{name}-{pname}", Input)
+                inp.disabled = not event.value
+            self._update_fx_status()
 
-    def _read_float(self, wid: str, default: float) -> float:
-        try:
-            return float(self.query_one(f"#{wid}", Input).value)
-        except (ValueError, AttributeError):
-            return default
+    def _update_info(self):
+        src_info = self.query_one("#source-info", Static)
+        db_info = self.query_one("#db-info", Static)
+        flist = self.query_one("#file-list", ListView)
+        if self._source_files:
+            src_info.update(f"Source: [bold]{Path(self._source_files[0]).name}[/bold]")
+        else:
+            src_info.update("Source: [dim]none[/dim]")
+        db_info.update(f"DB: [bold]{len(self._db_files)}[/bold] files")
+        # Update ListView
+        flist.clear()
+        if self._db_files:
+            for f in self._db_files:
+                flist.append(ListItem(Label(f"• {Path(f).name}")))
+        else:
+            flist.append(ListItem(Label("[dim]No files in database[/dim]")))
 
-    def _read_int(self, wid: str, default: int) -> int:
-        try:
-            return int(self.query_one(f"#{wid}", Input).value)
-        except (ValueError, AttributeError):
-            return default
-
-    def _read_str(self, wid: str, default: str) -> str:
-        try:
-            return self.query_one(f"#{wid}", Input).value
-        except AttributeError:
-            return default
+    def _update_fx_status(self):
+        active = [n for n, v in self._enabled_effects.items() if v]
+        status = self.query_one("#fx-status", Static)
+        if active:
+            status.update(f"Active: [bold]{' → '.join(active)}[/bold]")
+        else:
+            status.update("[dim]No effects enabled[/dim]")
 
     def _read_select(self, wid: str, default: str) -> str:
         try:
-            return self.query_one(f"#{wid}", Select).value
+            val = self.query_one(f"#{wid}", Select).value
+            return str(val) if val is not None else default
         except AttributeError:
             return default
 
-    def _build_effect_chain(self) -> EffectChain | None:
-        if not self._effects_list:
-            return None
-        chain = EffectChain()
-        for name in self._effects_list:
-            fn = EFFECT_MAP.get(name)
-            if fn:
-                chain.add(fn)
-        return chain
+    def _cancel_check(self):
+        return self._cancel_requested
 
-    # ── Pipeline ──────────────────────────────────────────────
+    def _btn(self, btn, disabled):
+        self.app.call_from_thread(setattr, btn, 'disabled', disabled)
 
-    @work(thread=True)
-    def _run_pipeline(self, generate: bool = False):
+    def _progress(self, prog, n):
+        self.app.call_from_thread(prog.update, progress=n)
+
+    def _msg(self, text, error=False):
+        self.app.call_from_thread(self.notify, text, severity="error" if error else "information")
+
+    @work(exclusive=True, thread=True)
+    def _run_pipeline(self):
         prog = self.query_one("#progress", ProgressBar)
-        colors = self._read_select("colors", "ocean")
-        chars = self._read_select("chars", "ascii")
-        viz_panel = self.query_one("#viz-panel", Static)
-        strip1 = self.query_one("#strip-1", Static)
-        strip2 = self.query_one("#strip-2", Static)
-        strip3 = self.query_one("#strip-3", Static)
+        gen_btn = self.query_one("#btn-generate", Button)
+        stop_btn = self.query_one("#btn-stop", Button)
+        play_btn = self.query_one("#btn-play", Button)
+        self._is_generating = True
+        self._cancel_requested = False
+        self._audio_buffer = None
+        self._btn(gen_btn, True)
+        self._btn(stop_btn, False)
+        self._btn(play_btn, True)
 
-        # Read all user params
-        pp_config = PreprocessingConfig(
-            target_sr=self._read_int("sr", 32000),
-            gain_db=self._read_float("gain", 0.0),
-            character=self._read_select("eq", "raw"),
-            norm_mode=self._read_select("norm", "peak"),
-            stereo_mode=self._read_select("stereo", "mono"),
-        )
-        gen_config = GenerationConfig(
-            temperature=self._read_float("temp", 0.5),
-            density=self._read_float("dens", 1.0),
-            mode=self._read_select("mode", "fluid"),
-            seed=self._read_int("seed", 42) or None,
-            segment_duration=self._read_float("seg", 1.0),
-        )
-        out_path = self._read_str("outpath", "output.wav")
-        max_segs = self._read_int("maxseg", 500)
-        xfade = self._read_float("xfade", 0.1)
-        knn = self._read_int("knn", 5)
-
-        # Build effect chain
-        effect_chain = self._build_effect_chain()
-
-        prog.update(progress=5)
-
+        # Read settings
         try:
-            from audiobrain.model.pipeline import AudioProcessingPipeline
+            sr = int(self.query_one("#sr", Input).value or "32000")
+            mode = self.query_one("#mode", Select).value
+            temp = float(self.query_one("#temp", Input).value or "0.5")
+            dens = float(self.query_one("#dens", Input).value or "1.0")
+            seg = float(self.query_one("#seg", Input).value or "1.0")
+            xfade = float(self.query_one("#xfade", Input).value or "0.1")
+            seed = int(self.query_one("#seed", Input).value or "42")
+            outpath = self.query_one("#outpath", Input).value or "output.wav"
+            colors = self.query_one("#colors", Select).value
+            chars = self.query_one("#chars", Select).value
+            self._sample_rate = sr
+        except ValueError as e:
+            self._msg(f"Invalid parameter: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-            device = "mps" if torch.backends.mps.is_available() else "cpu"
-            pipeline = AudioProcessingPipeline(
-                device=device,
-                sample_rate=pp_config.target_sr,
-            )
-            prog.update(progress=25)
+        self._progress(prog, 5)
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-            src = self._source_files[0] if self._source_files else None
-            if src is None:
-                self.call_from_thread(
-                    viz_panel.update, " [yellow]No source file selected[/yellow]"
-                )
-                return
+        if not self._db_files:
+            self._progress(prog, 0)
+            self._msg("No files in database!", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-            # Extract features → latents
-            self.call_from_thread(
-                strip1.update,
-                f" Oscilloscope: [bold yellow]Extracting features...[/bold yellow]",
-            )
+        from audiobrain.model.pipeline import AudioProcessingPipeline
+        from audiobrain.model.synthesizer import AudioMosaicSynthesizer
+        from audiobrain.model.visualizer import AudioBrainVisualizer
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        src = self._db_files[0]
+
+        # Load pipeline
+        try:
+            self._progress(prog, 15)
+            pipeline = AudioProcessingPipeline(device=device, sample_rate=sr)
+        except Exception as e:
+            self._msg(f"Pipeline: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        # Process
+        try:
+            self._progress(prog, 25)
             _, latents = pipeline.process_audio(src, duration=5.0)
-            self._latents = latents
-            prog.update(progress=50)
-
-            # Render preview
-            preview = self._build_preview_text(latents, colors, chars)
-            self.call_from_thread(viz_panel.update, preview)
-            prog.update(progress=65)
-
-            if generate and self._db_files:
-                from audiobrain.model.synthesizer import AudioMosaicSynthesizer
-
-                self.call_from_thread(
-                    strip1.update,
-                    " Oscilloscope: [bold yellow]Synthesizing...[/bold yellow]",
-                )
-
-                synth = AudioMosaicSynthesizer(
-                    device=device,
-                    segment_duration=gen_config.segment_duration,
-                    sample_rate=pp_config.target_sr,
-                    crossfade_duration=xfade,
-                )
-                synth.build_database(
-                    audio_files=self._db_files,
-                    feature_extractor=pipeline.feature_extractor,
-                    pipeline=pipeline,
-                    max_segments=max_segs,
-                )
-                audio, sr = synth.synthesize_from_latent(
-                    latents,
-                    self._db_files,
-                    pipeline=pipeline,
-                    config=gen_config,
-                )
-
-                # Apply effects
-                if effect_chain and len(effect_chain) > 0:
-                    self.call_from_thread(
-                        strip1.update,
-                        f" Oscilloscope: [bold yellow]Applying effects: {effect_chain}...[/bold yellow]",
-                    )
-                    audio = effect_chain.apply(audio.astype(np.float32), sr)
-
-                self._waveform = audio.astype(np.float32)
-
-                # Save
-                import soundfile as sf
-
-                sf.write(out_path, audio.astype(np.float32), sr)
-                prog.update(progress=90)
-                dur = len(audio) / sr
-
-                self.call_from_thread(
-                    strip1.update,
-                    f" Oscilloscope: [bold green]Saved {out_path} ({dur:.1f}s, {sr}Hz)[/bold green]",
-                )
-
-                # Update waveform + spectrogram strips
-                wf_text = self._build_waveform_text(audio)
-                self.call_from_thread(strip2.update, wf_text)
-
-                # Real spectrogram from audio
-                from audiobrain.model.visualizer import RealSpectrogram
-
-                rs = RealSpectrogram(grid_size=64)
-                rs_field = rs.compute(audio.astype(np.float32), sr)
-                rs_text = self._build_spec_strip_text(rs_field)
-                self.call_from_thread(strip3.update, rs_text)
-
-                # Also save HTML
-                try:
-                    import base64
-                    import io
-
-                    from audiobrain.model.visualizer import AudioBrainVisualizer
-
-                    buf = io.BytesIO()
-                    sf.write(buf, audio.astype(np.float32), sr, format="WAV")
-                    html_path = Path(out_path).with_suffix(".html")
-                    viz = AudioBrainVisualizer(
-                        grid_size=128, colors=colors, chars=chars
-                    )
-                    viz.save_html(
-                        str(html_path),
-                        latents,
-                        audio_data=buf.getvalue(),
-                        title=Path(src).stem,
-                        metadata={
-                            "source": Path(src).name,
-                            "mode": gen_config.mode,
-                            "temperature": f"{gen_config.temperature:.2f}",
-                            "duration": f"{dur:.1f}s",
-                            "colors": colors,
-                        },
-                        waveform=audio.astype(np.float32),
-                        sample_rate=sr,
-                    )
-                except Exception:
-                    pass
-
-            else:
-                dur = latents.shape[1] * 0.5  # approximate
-                self.call_from_thread(
-                    strip1.update,
-                    f" Oscilloscope: [bold green]Render complete ({latents.shape[1]} segments)[/bold green]",
-                )
-
-            prog.update(progress=100)
-
         except Exception as e:
-            import traceback
+            self._msg(f"Process: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-            traceback.print_exc()
-            self.call_from_thread(viz_panel.update, f" [red]Error: {e}[/red]")
-            prog.update(progress=0)
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-    # ── ASCII builders ────────────────────────────────────────
-
-    def _build_preview_text(self, latents, colors: str, chars: str) -> str:
+        # Database
         try:
-            from audiobrain.model.visualizer import CHAR_RAMPS, AudioBrainVisualizer
-
-            gs = 48
-            charset = CHAR_RAMPS.get(chars, CHAR_RAMPS["ascii"])
-            viz = AudioBrainVisualizer(grid_size=gs, chars=chars, colors=colors)
-            views = viz.compute_views(latents)
-            spec = views["spectrogram"]
-            lm = views["chladni_lines"]
-            n_ch = len(charset)
-            sep = "─" * gs
-            lines = ["  " + sep]
-            for y in range(gs):
-                row = ""
-                for x in range(gs):
-                    if lm[y, x]:
-                        hh = (x > 0 and lm[y, x - 1]) or (x < gs - 1 and lm[y, x + 1])
-                        hv = (y > 0 and lm[y - 1, x]) or (y < gs - 1 and lm[y + 1, x])
-                        if hh and hv:
-                            row += "┼"
-                        elif hh:
-                            row += "─"
-                        elif hv:
-                            row += "│"
-                        else:
-                            row += "·"
-                    else:
-                        v = float(spec[y, x])
-                        row += charset[min(int(v * (n_ch - 1)), n_ch - 1)]
-                lines.append("  " + row)
-            lines.append("  " + sep)
-            return "\n".join(lines)
-        except Exception as e:
-            return f" [red]Preview error: {e}[/red]"
-
-    def _build_waveform_text(self, waveform) -> str:
-        from audiobrain.model.visualizer import WaveformBar
-
-        wb = WaveformBar(width=100, height=3)
-        field = wb.compute(waveform)
-        chs = " ·∘●"
-        rows = []
-        for y in range(3):
-            r = "".join(chs[min(int(float(field[y, x]) * 3), 3)] for x in range(100))
-            rows.append(r)
-        return f" Waveform: {rows[0]}\n  {rows[1]}\n  {rows[2]}"
-
-    def _build_spec_strip_text(self, field) -> str:
-        """Compact spectrogram strip (64→40 cols downsampled)."""
-        gs = field.shape[0]
-        chs = " ·∘●"
-        rows = []
-        # Downsample to 40 cols for display
-        stride = max(1, gs // 40)
-        for y in range(0, gs, max(1, gs // 4)):
-            r = "".join(
-                chs[min(int(float(field[y, x]) * 3), 3)] for x in range(0, gs, stride)
+            self._progress(prog, 40)
+            synth = AudioMosaicSynthesizer(
+                device=device, segment_duration=seg,
+                sample_rate=sr, crossfade_duration=xfade
             )
-            rows.append(r)
-        return " Spectrogram:\n  " + "\n  ".join(rows)
+            synth.build_database(
+                audio_files=self._db_files,
+                feature_extractor=pipeline.feature_extractor,
+                pipeline=pipeline, max_segments=500
+            )
+        except Exception as e:
+            self._msg(f"Database: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
 
-    def _refresh_viz(self):
-        if self._latents is not None:
-            colors = self._read_select("colors", "ocean")
-            chars = self._read_select("chars", "ascii")
-            text = self._build_preview_text(self._latents, colors, chars)
-            self.query_one("#viz-panel", Static).update(text)
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        # Synthesize
+        try:
+            self._progress(prog, 60)
+            gen_config = GenerationConfig(temperature=temp, density=dens, mode=mode, seed=seed)
+            audio, _ = synth.synthesize_from_latent(
+                latents, self._db_files, pipeline=pipeline, config=gen_config
+            )
+        except Exception as e:
+            self._msg(f"Synthesis: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        # Effects
+        active_fx = [n for n, v in self._enabled_effects.items() if v]
+        if active_fx:
+            try:
+                self._progress(prog, 75)
+                chain = EffectChain()
+                fx_map = {
+                    "bitcrush": ("audiobrain.effects", "bitcrush"),
+                    "delay": ("audiobrain.effects", "delay"),
+                    "distort": ("audiobrain.effects", "distort"),
+                    "flanger": ("audiobrain.effects", "flange"),
+                    "glitch": ("audiobrain.effects", "glitch"),
+                    "pitch-down": ("audiobrain.effects", "pitch_down"),
+                    "pitch-up": ("audiobrain.effects", "pitch_up"),
+                }
+                import importlib
+                for fx_name in active_fx:
+                    kw = {}
+                    for pname, (pmin, pmax, pdef) in EFFECT_PARAMS.get(fx_name, {}).items():
+                        try:
+                            val = float(self.query_one(f"#fxp-{fx_name}-{pname}", Input).value)
+                            kw[pname] = max(pmin, min(pmax, val))
+                        except (ValueError, AttributeError):
+                            kw[pname] = pdef
+                    mod_name, fn_name = fx_map.get(fx_name, (None, None))
+                    if mod_name:
+                        mod = importlib.import_module(mod_name)
+                        chain.add(getattr(mod, fn_name), **kw)
+                audio = chain.apply(audio.astype(np.float32), sr)
+            except Exception as e:
+                self._msg(f"Effects: {e}", error=True)
+
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        # Save WAV
+        try:
+            self._progress(prog, 85)
+            import soundfile as sf
+            sf.write(outpath, audio.astype(np.float32), sr)
+        except Exception as e:
+            self._msg(f"Save: {e}", error=True)
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        if self._cancel_check():
+            return self._cleanup(gen_btn, stop_btn, play_btn)
+
+        # HTML
+        try:
+            self._progress(prog, 92)
+            html_path = Path(outpath).with_suffix(".html")
+            viz = AudioBrainVisualizer(grid_size=128, colors=colors, chars=chars)
+            import soundfile as sf
+            audio_buf = io.BytesIO()
+            sf.write(audio_buf, audio.astype(np.float32), sr, format="WAV")
+            viz.save_html(
+                str(html_path), latents, audio_data=audio_buf.getvalue(),
+                title=Path(src).stem,
+                metadata={"source": Path(src).name, "mode": mode},
+                waveform=audio.astype(np.float32), sample_rate=sr
+            )
+        except Exception as e:
+            self._msg(f"HTML: {e}", error=True)
+
+        self._audio_buffer = audio
+        self._progress(prog, 100)
+        self._btn(play_btn, False)
+        dur = len(audio) / sr
+        self._msg(f"Done! {outpath} ({dur:.1f}s)")
+
+    def _cleanup(self, gen_btn, stop_btn, play_btn):
+        self._is_generating = False
+        self._btn(gen_btn, False)
+        self._btn(stop_btn, True)
+        self._btn(play_btn, self._audio_buffer is None and True or False)
+        self._msg("Cancelled", error=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Main App
+# ═══════════════════════════════════════════════════════════════
+class AudioBrainTUI(App):
+    """AudioBrain TUI Application."""
+
+    CSS = """
+    /* ── Global ── */
+    Screen {
+        text-style: none;
+    }
+
+    Button {
+        min-height: 1;
+        border: none;
+        text-style: none;
+    }
+
+    Input {
+        height: 1;
+        min-height: 1;
+        border: none;
+    }
+
+    Select {
+        min-height: 1;
+        border: none;
+    }
+
+    Select > .select-list-viewport {
+        max-height: 10;
+    }
+
+    Label {
+        height: 1;
+        min-height: 1;
+    }
+
+    Checkbox {
+        min-height: 1;
+        border: none;
+    }
+
+    .section-title {
+        text-style: bold;
+        color: $primary;
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    /* ── Home ─ */
+    #home-container {
+        align: center middle;
+        height: 1fr;
+    }
+
+    #home-content {
+        height: auto;
+        width: auto;
+        align: center middle;
+    }
+
+    #logo {
+        content-align: center middle;
+        text-style: bold;
+        color: $primary;
+        height: auto;
+        width: auto;
+    }
+
+    #menu {
+        height: auto;
+        width: 30;
+        align: center middle;
+        margin-top: 1;
+    }
+
+    #menu Button {
+        width: 100%;
+        margin: 1 0;
+    }
+
+    #version {
+        text-align: center;
+        color: $text-muted;
+        height: 1;
+        width: 100%;
+    }
+
+    /* ── Workspace top row ── */
+    #workspace-top {
+        height: 20;
+        min-height: 20;
+    }
+
+    #left-panel {
+        width: 1fr;
+        height: 1fr;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    #left-panel Button {
+        width: 100%;
+        height: 3;
+        margin-bottom: 1;
+    }
+
+    #left-panel Static {
+        margin-top: 1;
+    }
+
+    #right-panel {
+        width: 2fr;
+        height: 1fr;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    #file-list {
+        height: 1fr;
+    }
+
+    ListView {
+        height: 1fr;
+    }
+
+    ListItem {
+        padding: 0 1;
+    }
+
+    ListItem Label {
+        height: 1;
+    }
+
+    #gen-panel {
+        width: 3fr;
+        height: 1fr;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    #gen-grid {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .gen-col {
+        width: 1fr;
+        height: auto;
+        margin-right: 2;
+    }
+
+    .gen-col:last-child {
+        margin-right: 0;
+    }
+
+    #outpath-row {
+        height: 3;
+        margin-bottom: 1;
+    }
+
+    #outpath-row Input {
+        height: 3;
+    }
+
+    #outpath-row Button {
+        height: 3;
+    }
+
+    #outpath-row Input {
+        width: 1fr;
+    }
+
+    #outpath-row Button {
+        width: 5;
+        min-width: 5;
+    }
+
+    #btn-generate {
+        width: 100%;
+        height: 3;
+    }
+
+    #btn-view {
+        width: 100%;
+        height: 3;
+    }
+
+    #progress {
+        width: 100%;
+    }
+
+    #post-gen {
+        height: auto;
+        align: center middle;
+    }
+
+    #post-gen Button {
+        width: 100%;
+        height: 3;
+        margin-top: 1;
+    }
+
+    /* ── Rule separators ── */
+    Rule {
+        margin: 1 0;
+    }
+
+    /* ── Workspace middle row ── */
+    #controls-row {
+        height: 1fr;
+    }
+
+    #prep-synth-col {
+        width: 1fr;
+        height: 1fr;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    #prep-section {
+        height: auto;
+    }
+
+    #synth-section {
+        height: auto;
+    }
+
+    #fx-col {
+        width: 1fr;
+        height: 1fr;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    #fx-section {
+        height: auto;
+    }
+
+    #controls-row Input {
+        width: 1fr;
+    }
+
+    #controls-row Select {
+        width: 1fr;
+    }
+
+    .field-row {
+        height: 1;
+    }
+
+    .field-row Input {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    .field-row Input:last-child {
+        margin-right: 0;
+    }
+
+    /* ─ Preprocessing 2-column grid ── */
+    .prep-grid {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .prep-col {
+        width: 1fr;
+        height: auto;
+        margin-right: 2;
+    }
+
+    .prep-col:last-child {
+        margin-right: 0;
+    }
+
+    .prep-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .prep-row Label {
+        width: 12;
+        color: $text-muted;
+    }
+
+    .prep-row Input, .prep-row Select {
+        width: 1fr;
+    }
+
+    /* ── Synthesis 2-column grid ── */
+    .synth-grid {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .synth-col {
+        width: 1fr;
+        height: auto;
+        margin-right: 2;
+    }
+
+    .synth-col:last-child {
+        margin-right: 0;
+    }
+
+    .synth-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .synth-row Label {
+        width: 8;
+        color: $text-muted;
+    }
+
+    .synth-row Input, .synth-row Select {
+        width: 1fr;
+    }
+
+    /* ─ Effects compact layout ── */
+    .fx-item {
+        height: auto;
+        margin-bottom: 1;
+        border: solid $primary-background;
+        padding: 0 1;
+    }
+
+    .fx-params {
+        height: 1;
+        align: left middle;
+        margin-top: 1;
+    }
+
+    .fx-param-label {
+        text-style: bold;
+        color: $text-muted;
+        height: 1;
+        margin-right: 1;
+    }
+
+    .fx-params Input {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    .fx-params Input:last-child {
+        margin-right: 0;
+    }
+
+    #fx-status {
+        margin-top: 1;
+    }
+
+    /* ── Docs & About ── */
+    #docs-scroll, #about-scroll {
+        height: 1fr;
+    }
+
+    #docs-footer, #about-footer {
+        height: 1;
+        align: center middle;
+    }
+
+    Markdown {
+        padding: 1 2;
+    }
+    """
+
+    SCREENS = {
+        "home": HomeScreen,
+        "workspace": WorkspaceScreen,
+        "docs": DocsScreen,
+        "about": AboutScreen,
+    }
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def on_mount(self):
+        self.push_screen("home")
 
 
 def run():

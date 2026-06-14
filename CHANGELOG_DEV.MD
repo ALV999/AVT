@@ -2,6 +2,191 @@
 
 All notable changes to the A/VT project during development will be documented in this file.
 
+## [0.4.0] - 2026-06-13
+
+### TUI Redesign — Planned
+
+**Comprehensive analysis completed** (`docs/tui-analysis.md`) identifying critical issues and improvement opportunities.
+
+#### Identified Issues
+
+- **Architecture**
+  - Unused `widgets.py` module (VisualizationPanel, MiniStrip, EffectChainWidget not integrated)
+  - Monolithic `app.py` (562 lines, no separation of concerns)
+  - Duplicated pipeline logic instead of reusing `cli.py`
+  - No error recovery or cancel mechanism
+  - No state persistence
+
+- **User Experience**
+  - No file type filtering (user can select non-audio files)
+  - No audio preview capability
+  - Confusing database workflow ("Add to DB" button unclear)
+  - No parameter validation or help tooltips
+  - Progress bar with no time estimates
+  - Cannot cancel long-running operations
+  - Effects cannot be removed individually, no parameter editing
+
+- **Visual Design**
+  - Cramped 3-column layout wastes space
+  - No visual hierarchy
+  - ASCII visualization panel too small (48-grid vs 128-grid CLI)
+  - No theme support
+
+- **Missing Features**
+  - No file filtering (.wav, .mp3, .flac only)
+  - No multi-select or drag-and-drop
+  - No batch processing
+  - No preset system
+  - No recent files history
+
+#### New TUI Architecture (Planned)
+
+**Two-screen flow:**
+
+1. **Home Screen**
+   - ASCII art logo
+   - Menu: Start, Docs, About, Quit
+   - Clean, minimal entry point
+
+2. **Main Workspace**
+   - **Left Column (Commands)**
+     - Load Files button
+     - Quick actions (Clear DB, Load Preset, Save Preset)
+   - **Right Column (File List)**
+     - Added source files
+     - Database files count
+     - Remove individual files
+   - **Below: Processing Options**
+     - Preprocessing section (sample rate, gain, EQ, normalization, stereo)
+     - Synthesis section (mode, temperature, density, segment duration, crossfade, k-NN, seed)
+     - Effects section with:
+       - Checkboxes to enable/disable each effect
+       - Sliders for intensity/mix parameters
+       - Remove button per effect
+   - **Bottom: Generate**
+     - Large, prominent Generate button
+     - Integrated progress bar with status messages
+     - Cancel button during processing
+
+#### Implementation Plan
+
+**Phase 1: Critical Fixes** (1-2 days)
+
+- [ ] Remove unused `widgets.py` or integrate properly
+- [ ] Add file type filtering to DirectoryTree
+- [ ] Add cancel button for long operations
+- [ ] Add parameter validation (range checks)
+- [ ] Extract pipeline logic to reusable controller
+
+**Phase 2: Core Redesign** (3-5 days)
+
+- [ ] Implement Home Screen with ASCII logo
+- [ ] Build new 2-column + bottom panel layout
+- [ ] Replace visualization panel with file list
+- [ ] Add effect checkboxes and sliders
+- [ ] Implement large Generate button with progress bar
+- [ ] Add parameter help tooltips
+
+**Phase 3: Polish** (2-3 days)
+
+- [ ] Add audio preview widget
+- [ ] Add preset save/load system
+- [ ] Add keyboard shortcuts
+- [ ] Add theme support
+- [ ] Add recent files history
+- [ ] End-to-end testing
+
+#### Files to Modify
+
+| File                          | Action    | Description                               |
+| ----------------------------- | --------- | ----------------------------------------- |
+| `audiobrain/tui/app.py`       | Rewrite   | New home screen + workspace layout        |
+| `audiobrain/tui/widgets.py`   | Integrate | Use custom widgets or remove              |
+| `audiobrain/tui/controllers/` | Create    | Pipeline controller, effect controller    |
+| `audiobrain/tui/views/`       | Create    | Home screen, file browser, control panels |
+| `audiobrain/cli.py`           | Refactor  | Extract reusable pipeline function        |
+
+---
+
+## [0.3.0] - 2026-06-13
+
+### Added
+
+- **Effects module** (`audiobrain/effects/`) — post-processing audio effects chain
+  - `bitcrusher.py` — bit-depth reduction with optional downsampling (4 params: bits, downsample, mix, seed)
+  - `pitch.py` — pitch shift up/down via resampling (semitones + mix)
+  - `flanger.py` — comb-filter modulation (depth_ms, rate_hz, mix)
+  - `glitch.py` — stochastic segment reversal/repetition (intensity, seed)
+  - `distortion.py` — tanh waveshaping drive (drive, mix)
+  - `delay.py` — feedback delay line (time_ms, feedback, mix)
+  - `chain.py` — `EffectChain` class: `add()`, `remove()`, `clear()`, `apply()` for composing effects
+  - All effects include safety clamping and dry/wet mix blending
+- **Visualizer v2** (`audiobrain/model/visualizer.py`) — complete rewrite (641 → 985 lines)
+  - `LatentSpectrogram` class — 128×128 spectrogram field from latent dimension activations
+  - `ChladniOscilloscope` class — physical resonance simulation with nodal line detection + thickness
+  - `WaveformBar` class — compact horizontal waveform energy bar
+  - `WaveformLine` class — traditional oscilloscope line trace with SVG export
+  - `RealSpectrogram` class — STFT spectrogram computed from raw audio waveform
+  - `compute_views()` — unified spectrogram + Chladni nodal line computation
+  - `render_terminal()` — ANSI terminal output with spectrogram overlay modes (`overlay`, `spectrogram`, `chladni`, `both`)
+  - `build_html()` — self-contained HTML artifact with:
+    - Latent spectrogram rendered as base64 PPM pixel image
+    - Chladni nodal lines overlaid as SVG rect elements
+    - Oscilloscope waveform line (SVG polyline)
+    - Waveform energy bar + real audio spectrogram (bottom strips)
+    - Audio player (base64-embedded WAV)
+    - Boxed panel layout with labels and legend
+  - `save_html()` — saves HTML artifact with waveform and sample rate
+  - `_field_to_data_url()` — converts 2D numpy field to base64-encoded PPM (P6) image
+  - `_lines_to_svg()` — converts nodal line mask + thickness to SVG rect elements
+  - `_field_to_ansi()` / `_field_to_ansi_overlay()` — ANSI terminal rendering with character ramps
+  - New color scheme: `"aurora"` (purple, cyan, green gradient)
+  - New character ramps: `CHAR_RAMPS` replaces `CHAR_SETS` with extended ranges
+  - Removed: `similarity_to_chars`, `similarity_to_ansi`, `to_grid`, `render`, `render_with_stats`,
+    `save_ansi`, `latent_to_ascii_art`, `_compute_pca_data`, `save_artifact`
+- **Effects integration** (`audiobrain/model/generation_pipeline.py`)
+  - `generate()` and `generate_and_save()` now accept optional `effect_chain` parameter
+  - Effects applied post-synthesis before audio output
+- **Effect test suite** (`tests/test_effects.py`)
+  - 26 tests covering: bitcrusher (shape, peak, mix=0 dry, downsample blend),
+    pitch (up/down length, semitones=0 identity, mix=0 dry),
+    flanger (shape, peak, mix=0 dry), glitch (shape, peak, reproducibility),
+    distortion (shape, peak, mix=0 dry), delay (shape, peak, mix=0 dry),
+    EffectChain (add/remove/clear/apply, shape, peak, length),
+    safety clamps (out-of-range params)
+- **External test run** (`tests/run_external_test.py`)
+  - 5 setups with distinct effect chains: crushed, drift, swirl, annihilated, pure
+  - Each setup: generates WAV + HTML artifact with unique color scheme
+  - Results: `tests/test_data/results/` (5 WAV + 5 HTML)
+
+### Changed
+
+- **Visualizer API** — `AudioBrainVisualizer.__init__` now takes `chars` (not `charset`),
+  adds `chladni_chars` and `chladni_color` parameters
+- **Visualizer HTML format** — `build_html()` signature changed: `audio_data` (bytes) replaces
+  `audio_base64` (str); adds `waveform` (np.ndarray) and `sample_rate` (int)
+- **Save method** — `save_artifact()` replaced by `save_html()`
+
+### Fixed
+
+- **AST sample rate mismatch** (`audiobrain/model/feature_extractor.py`)
+  - `_try_load_models()` now adopts HF feature extractor's native `sampling_rate` after load
+  - Fixes "was trained using a sampling rate of 16000 and not 32000" error on MPS/CUDA
+  - Pipeline resamples input audio to match loaded model's expected rate
+
+### Known Issues
+
+- `tests/run_external_test.py` calls deprecated `save_artifact()` and uses old `charset` kwarg
+  — needs update to `save_html()` API with `waveform` and `sample_rate` parameters
+
+### Verification
+
+- Effect tests: 26/26 passed (all effects + chain + safety clamps)
+- External test: 5/5 setups generate WAV + HTML artifacts successfully
+- HTML artifacts: spectrogram + Chladni lines + waveform strips render correctly
+
+---
+
 ## [0.2.0] - 2026-05-26
 
 ### Added

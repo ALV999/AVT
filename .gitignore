@@ -49,9 +49,12 @@ __pycache__/
 .claude
 .deepseek
 .deepseek/
+.qwen
+.qwen/
 
 # Cache directories
 .mypy_cache/
 .pytest_cache/
 .gradle/
 ```
+session_20260613_151948.json

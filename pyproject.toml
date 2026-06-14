@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avt"
+version = "0.4.0"
+description = "Audio/Visual Transformer — Generative Soundscape System"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "transformers>=4.30.0",
+    "colorama>=0.4.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+    "textual>=0.50.0",
+]
+
+[project.scripts]
+avt = "audiobrain.tui.app:run"
+
+[tool.setuptools.packages.find]
+include = ["audiobrain*", "src*"]

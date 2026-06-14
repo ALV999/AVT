@@ -24,12 +24,17 @@ Audio Input  →  PANNs/AST  →  Projection  →  Transformer  →  k-NN Mosaic
 | **ASCII Visualization** | 63x63 cosine-similarity matrix with ANSI color support and multiple character sets |
 | **Audio Effects** | Bitcrush, pitch shift, flanger, glitch, distortion, delay via EffectChain |
 | **CLI** | Full argparse interface with `generate`, `visualize`, `train`, `info` subcommands |
+| **TUI** | Terminal User Interface (Textual) with file browser, effects sliders, progress bar, audio playback |
 
 ## Quick Start
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+
+# Launch the TUI (recommended)
+avt
+# or: python -m audiobrain
 
 # Display system and model info
 python audiobrain/cli.py info
@@ -65,6 +70,8 @@ print(f"Parameters: {model.count_parameters():,}")
 audiobrain/
   __init__.py           # Package root
   cli.py                # CLI interface
+  tui/                  # Terminal User Interface
+    app.py              # Textual app (Home, Workspace, Docs, About screens)
   model/                # Core model
     core.py             # AudioBrainCore (main class)
     config.py           # BrainConfig dataclass

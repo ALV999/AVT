@@ -1,985 +1,491 @@
 """
-Artistic Visualization Module — 128x128 latent spectrogram with Chladni overlay.
+Artistic Visualization Module — latent spectrogram with ASCII Chladni overlay.
 
 Two complementary views derived entirely from the ML model's latent vectors:
-  1. Latent Spectrogram: 128x128 grid where (t, dim) = activation of learned feature
-  2. Chladni Nodal Lines: circular plate interference patterns from latent mode
-     amplitudes, rendered as organic line art overlaid on the spectrogram.
-
-The 512-dimensional latent space is the product of:
-  PANNs/AST feature extraction → ProjectionHead(2048→512) → SoundscapeTransformer(512)
-
-Each latent dimension has learned to represent some aspect of the audio. We harvest
-that representation to create artistic visualizations that ARE the ML product.
+  1. Latent Spectrogram: activation grid where (t, dim) = learned audio feature
+  2. Chladni Nodal Lines: circular plate interference patterns from latent modes
 """
 
 from __future__ import annotations
 
-import base64
-import io
-import os
-import sys
+import base64, io, os, sys, struct, zlib
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
 
-
-# ═══════════════════════════════════════════════════════════════
-# Color support
-# ═══════════════════════════════════════════════════════════════
+# ── Color support ──
 
 _colorama_available = False
 try:
-    import colorama
-    colorama.init()
-    _colorama_available = True
-except ImportError:
-    pass
-
+    import colorama; colorama.init(); _colorama_available = True
+except ImportError: pass
 
 def _supports_color() -> bool:
     if not _colorama_available:
         if os.name == 'nt':
             try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                mode = ctypes.c_ulong()
-                handle = kernel32.GetStdHandle(-11)
-                kernel32.GetConsoleMode(handle, ctypes.byref(mode))
-                return bool(mode.value & 0x0004)
-            except Exception:
-                return False
-        if not sys.stdout.isatty():
-            return False
-        term = os.environ.get('TERM', '')
-        if term in ('dumb', ''):
-            return False
-        return True
+                import ctypes; k=ctypes.windll.kernel32; m=ctypes.c_ulong()
+                k.GetConsoleMode(k.GetStdHandle(-11), ctypes.byref(m))
+                return bool(m.value & 0x0004)
+            except: return False
+        if not sys.stdout.isatty(): return False
+        t = os.environ.get('TERM',''); return t not in ('dumb','')
     return True
 
-
-def _ansi_rgb(r: int, g: int, b: int, char: str) -> str:
-    return f"\033[38;2;{r};{g};{b}m{char}\033[0m"
-
-
-def _plain_char(r, g, b, char):
-    return char
-
-
+def _ansi_rgb(r, g, b, ch): return f"\033[38;2;{r};{g};{b}m{ch}\033[0m"
+def _plain_char(r, g, b, ch): return ch
 _color_fn = _ansi_rgb if _supports_color() else _plain_char
 
-# ═══════════════════════════════════════════════════════════════
-# Character ramps
-# ═══════════════════════════════════════════════════════════════
+# ── Character ramps ──
 
 CHAR_RAMPS: dict[str, str] = {
-    "dots":     " ·∘●",
-    "ascii":    " .:-=+*#%@",
-    "blocks":   " ░▒▓█",
-    "braille":  " ⠁⠃⠇⠏⠟⠿",
-    "binary":   " 01",
-    "shades":   " ░░▒▒▓▓██",
+    "dots":      "  ··∘∘●●●•◦◆◇◈◉◊○◎●",
+    "ascii":     "  .:;-=+*#%@★★★★",
+    "blocks":    "  ░░▒▒▓▓█████",
+    "braille":   "  ⠁⠃⠇⠏⠟⠿⣿",
+    "binary":    " 0101010101",
+    "shades":    "  ░░▒░▒▓▒▓██▓█",
+    "minimal":   "  .·:·::▪▪▪",
+    "hexdots":   "  ⠄⠆⠇⠏⠿⣿⣿",
+    "cubes":     "  ░░▒▒▓▓████▓▓",
+    "arrows":    "  ·›»►▸▶▼▲◆",
+    "sparks":    "  ·˙∴⋯⋰⋱⚡✨",
+    "pixels":    "  ░░▒▒▓▓██████",
+    "cistercian":"  ⠀⠁⠃⠇⠏⠟⠿⣿⣿",
+    "morse":     "  ·-▪▬▬▪",
+    "lcd":       "  ▓███▓",
 }
 
-# ═══════════════════════════════════════════════════════════════
-# Color schemes
-# ═══════════════════════════════════════════════════════════════
+# ── Color schemes ──
 
-def _interp_heat(v: float) -> tuple[int, int, int]:
-    v = max(0.0, min(1.0, v))
-    if v < 0.33:
-        t = v / 0.33
-        return (int(255 * t), 0, 0)
-    elif v < 0.66:
-        t = (v - 0.33) / 0.33
-        return (255, int(255 * t), 0)
-    else:
-        t = (v - 0.66) / 0.34
-        return (255, 255, int(255 * t))
+def _ocean(v):
+    v=max(0.,min(1.,v))
+    if v<.33: t=v/.33; return (0,0,int(128*t))
+    elif v<.66: t=(v-.33)/.33; return (0,int(200*t),128+int(127*t))
+    else: t=(v-.66)/.34; return (int(200*t),200+int(55*t),255)
 
+def _interp_forest(v):
+    v=max(0.,min(1.,v))
+    if v<.5: t=v/.5; return (0,int(180*t),0)
+    else: t=(v-.5)/.5; return (int(255*t),180+int(75*t),int(255*t))
 
-def _interp_ocean(v: float) -> tuple[int, int, int]:
-    v = max(0.0, min(1.0, v))
-    if v < 0.33:
-        t = v / 0.33
-        return (0, 0, int(128 * t))
-    elif v < 0.66:
-        t = (v - 0.33) / 0.33
-        return (0, int(200 * t), 128 + int(127 * t))
-    else:
-        t = (v - 0.66) / 0.34
-        return (int(200 * t), 200 + int(55 * t), 255)
+def _interp_sunset(v):
+    v=max(0.,min(1.,v))
+    if v<.33: t=v/.33; return (int(128*(1-t)+200*t),0,int(128*(1-t)))
+    elif v<.66: t=(v-.33)/.33; return (200+int(55*t),int(100*t),0)
+    else: t=(v-.66)/.34; return (255,100+int(155*t),int(200*t))
 
+def _interp_aurora(v):
+    v=max(0.,min(1.,v))
+    if v<.33: t=v/.33; return (0,int(128+127*t),int(128+127*(1-t)))
+    elif v<.66: t=(v-.33)/.33; return (int(128*t),int(255*(1-t)),int(128*t))
+    else: t=(v-.66)/.34; return (128+int(127*t),int(128*t),int(128+127*(1-t)))
 
-def _interp_forest(v: float) -> tuple[int, int, int]:
-    v = max(0.0, min(1.0, v))
-    if v < 0.5:
-        t = v / 0.5
-        return (0, int(180 * t), 0)
-    else:
-        t = (v - 0.5) / 0.5
-        return (int(255 * t), 180 + int(75 * t), int(255 * t))
+def _interp_mono(v): g=int(max(0.,min(1.,v))*255); return (g,g,g)
 
+def _interp_neon(v):
+    v=max(0.,min(1.,v))
+    if v<.25: t=v/.25; return (int(255*t),0,255)
+    elif v<.5: t=(v-.25)/.25; return (0,int(255*t),255)
+    elif v<.75: t=(v-.5)/.25; return (0,255,int(255*(1-t)))
+    else: t=(v-.75)/.25; return (int(255*t),255,0)
 
-def _interp_sunset(v: float) -> tuple[int, int, int]:
-    v = max(0.0, min(1.0, v))
-    if v < 0.33:
-        t = v / 0.33
-        return (int(128 * (1 - t) + 200 * t), 0, int(128 * (1 - t)))
-    elif v < 0.66:
-        t = (v - 0.33) / 0.33
-        return (200 + int(55 * t), int(100 * t), 0)
-    else:
-        t = (v - 0.66) / 0.34
-        return (255, 100 + int(155 * t), int(200 * t))
+def _interp_dusk(v):
+    v=max(0.,min(1.,v))
+    if v<.5: t=v/.5; return (int(40+60*t),0,int(80+80*t))
+    else: t=(v-.5)/.5; return (int(100+155*t),int(40*t),int(160-80*t))
 
+def _interp_ember(v):
+    v=max(0.,min(1.,v))
+    if v<.33: t=v/.33; return (int(60+40*t),0,int(10*t))
+    elif v<.66: t=(v-.33)/.33; return (int(100+155*t),int(80*t),0)
+    else: t=(v-.66)/.34; return (255,int(80+175*t),int(100*t))
 
-def _interp_aurora(v: float) -> tuple[int, int, int]:
-    """Teal → purple → gold gradient."""
-    v = max(0.0, min(1.0, v))
-    if v < 0.33:
-        t = v / 0.33
-        return (0, int(128 + 127 * t), int(128 + 127 * (1 - t)))
-    elif v < 0.66:
-        t = (v - 0.33) / 0.33
-        return (int(128 * t), int(255 * (1 - t)), int(128 * t))
-    else:
-        t = (v - 0.66) / 0.34
-        return (128 + int(127 * t), int(128 * t), int(128 + 127 * (1 - t)))
+def _interp_glacier(v):
+    v=max(0.,min(1.,v))
+    if v<.5: t=v/.5; return (int(180*t),int(200*t),int(200+55*t))
+    else: t=(v-.5)/.5; return (int(180+75*t),int(200+55*t),255)
 
-
-def _interp_mono(v: float) -> tuple[int, int, int]:
-    v = max(0.0, min(1.0, v))
-    g = int(v * 255)
-    return (g, g, g)
-
+def _heat(v):
+    v=max(0.,min(1.,v))
+    if v<.33: t=v/.33; return (int(255*t),0,0)
+    elif v<.66: t=(v-.33)/.33; return (255,int(255*t),0)
+    else: t=(v-.66)/.34; return (255,255,int(255*t))
 
 COLOR_SCHEMES: dict[str, callable] = {
-    "heat":   _interp_heat,
-    "ocean":  _interp_ocean,
-    "forest": _interp_forest,
-    "sunset": _interp_sunset,
-    "aurora": _interp_aurora,
-    "mono":   _interp_mono,
+    "heat": _heat, "ocean": _ocean, "forest": _interp_forest,
+    "sunset": _interp_sunset, "aurora": _interp_aurora, "mono": _interp_mono,
+    "neon": _interp_neon, "dusk": _interp_dusk, "ember": _interp_ember,
+    "glacier": _interp_glacier,
 }
 
-
-# ═══════════════════════════════════════════════════════════════
-# Latent Spectrogram — 128x128 view from ML latent vectors
-# ═══════════════════════════════════════════════════════════════
+# ── Latent Spectrogram ──
 
 class LatentSpectrogram:
-    """
-    128x128 spectrogram-like field derived entirely from latent vectors.
+    def __init__(self, grid_size=64): self.grid_size = grid_size
 
-    The ML pipeline outputs [1, N, 512] vectors. We interpret:
-      - Time axis: N segments → interpolated to 128 steps
-      - Frequency axis: first 128 of the 512 latent dimensions
-
-    Each latent dimension has learned (through the Transformer's self-supervised
-    training) to represent some audio characteristic. By treating the raw dimension
-    activations as "frequency bins", we create a spectrogram that IS the model's
-    understanding of the sound.
-    """
-
-    def __init__(self, grid_size: int = 128):
-        self.grid_size = grid_size
-
-    def compute(self, latents: torch.Tensor) -> np.ndarray:
-        """Map latent vectors to a [grid_size, grid_size] spectrogram grid."""
-        if latents.dim() == 3:
-            latents = latents[0]
+    def compute(self, latents):
+        if latents.dim() == 3: latents = latents[0]
         latents = latents.cpu().numpy().astype(np.float32)
-
-        n_steps, n_dims = latents.shape
-
-        # Time axis: interpolate N steps → grid_size steps
-        if n_steps != self.grid_size:
-            x_old = np.linspace(0, 1, n_steps)
-            x_new = np.linspace(0, 1, self.grid_size)
-            latents_interp = np.zeros((self.grid_size, n_dims), dtype=np.float32)
-            for d in range(n_dims):
-                latents_interp[:, d] = np.interp(x_new, x_old, latents[:, d])
-            latents = latents_interp
-
-        # Frequency axis: take first grid_size dimensions (learned features)
-        freq_dims = min(n_dims, self.grid_size)
-        spectrogram = latents[:, :freq_dims]
-
-        if freq_dims < self.grid_size:
-            pad = np.zeros((self.grid_size, self.grid_size - freq_dims), dtype=np.float32)
-            spectrogram = np.concatenate([spectrogram, pad], axis=1)
-
-        # Per-column percentile normalization
-        result = np.zeros_like(spectrogram)
-        for col in range(self.grid_size):
-            col_data = spectrogram[:, col]
-            lo = np.percentile(col_data, 5)
-            hi = np.percentile(col_data, 95)
-            rng = hi - lo
-            if rng > 1e-8:
-                result[:, col] = np.clip((col_data - lo) / rng, 0.0, 1.0)
-            else:
-                result[:, col] = 0.5
-
+        n_steps, n_dims = latents.shape; gs = self.grid_size
+        if n_steps != gs:
+            xo = np.linspace(0,1,n_steps); xn = np.linspace(0,1,gs)
+            li = np.zeros((gs,n_dims),dtype=np.float32)
+            for d in range(n_dims): li[:,d] = np.interp(xn,xo,latents[:,d])
+            latents = li
+        fd = min(n_dims,gs); spec = latents[:,:fd]
+        if fd < gs:
+            pad = np.zeros((gs,gs-fd),dtype=np.float32); spec = np.concatenate([spec,pad],axis=1)
+        result = np.zeros_like(spec)
+        for col in range(gs):
+            cd = spec[:,col]; lo,hi = np.percentile(cd,5), np.percentile(cd,95)
+            rng = hi-lo
+            result[:,col] = np.clip((cd-lo)/rng,0,1) if rng>1e-8 else .5
         return result.astype(np.float32)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Chladni Oscilloscope — circular plate, nodal line art
-# ═══════════════════════════════════════════════════════════════
-
-
-class WaveformBar:
-    """Compact horizontal waveform bar."""
-    def __init__(self, width=128, height=12):
-        self.width = width
-        self.height = height
-
-    def compute(self, waveform):
-        if len(waveform) == 0:
-            return np.zeros((self.height, self.width), dtype=np.float32)
-        n = len(waveform)
-        chunk = max(1, n // self.width)
-        result = np.zeros((self.height, self.width), dtype=np.float32)
-        for c in range(self.width):
-            start = c * chunk
-            end = min(start + chunk, n)
-            if start >= n: break
-            seg = waveform[start:end]
-            if len(seg) == 0: continue
-            peak = float(np.abs(seg).max())
-            peak = min(peak, 1.0)
-            center = self.height // 2
-            bar_height = int(peak * center)
-            for h in range(bar_height):
-                if center + h < self.height:
-                    result[center + h, c] = (h + 1) / bar_height if bar_height > 0 else 0.0
-                if center - h - 1 >= 0:
-                    result[center - h - 1, c] = (h + 1) / bar_height if bar_height > 0 else 0.0
-        return result.astype(np.float32)
-
-
-class WaveformLine:
-    """Traditional line oscilloscope trace."""
-    def __init__(self, width=256, height=40):
-        self.width = width
-        self.height = height
-
-    def compute_points(self, waveform):
-        if len(waveform) == 0:
-            return np.zeros((self.width, 2), dtype=np.float32)
-        n = len(waveform)
-        chunk = max(1, n // self.width)
-        mid = self.height / 2.0
-        points = np.zeros((self.width, 2), dtype=np.float32)
-        for i in range(self.width):
-            start = i * chunk
-            end = min(start + chunk, n)
-            if start >= n:
-                points[i, 1] = mid
-                points[i, 0] = float(i)
-                continue
-            seg = waveform[start:end]
-            if len(seg) == 0:
-                points[i, 1] = mid
-            else:
-                peak = float(np.abs(seg).max())
-                peak = min(peak, 1.0)
-                points[i, 1] = mid - peak * (mid - 1)
-            points[i, 0] = float(i)
-        return points
-
-    def to_svg(self, waveform, width_px=640, height_px=60):
-        pts = self.compute_points(waveform)
-        scale_x = width_px / self.width
-        scale_y = height_px / self.height * 0.8
-        offset_y = height_px * 0.5
-        svg_pts = []
-        for i in range(len(pts)):
-            x = pts[i, 0] * scale_x
-            y = offset_y + (pts[i, 1] - self.height / 2) * scale_y
-            svg_pts.append(f"{x:.1f},{y:.1f}")
-        polyline = " ".join(svg_pts)
-        return (
-            f'<polyline points="{polyline}" fill="none" '
-            f'stroke="rgba(255,255,255,0.5)" stroke-width="1" '
-            f'vector-effect="non-scaling-stroke"/>'
-        )
-
 
 class RealSpectrogram:
-    """Traditional STFT spectrogram."""
-    def __init__(self, grid_size=64):
-        self.grid_size = grid_size
-
-    def compute(self, waveform, sample_rate):
-        gs = self.grid_size
-        if len(waveform) == 0:
-            return np.zeros((gs, gs), dtype=np.float32)
-        nperseg = gs * 2
-        hop = max(1, len(waveform) // gs)
-        n_frames = min(gs, max(1, (len(waveform) - nperseg) // hop + 1))
-        if n_frames < 2:
-            return np.zeros((gs, gs), dtype=np.float32)
-        window = np.hanning(nperseg)
-        spec = np.zeros((gs // 2 + 1, gs), dtype=np.float32)
+    def __init__(self, gs=64): self.gs=gs
+    def compute(self, wf, sr):
+        gs=self.gs
+        if len(wf)==0: return np.zeros((gs,gs),dtype=np.float32)
+        nperseg=gs*2; hop=max(1,len(wf)//gs); n_frames=min(gs,max(1,(len(wf)-nperseg)//hop+1))
+        if n_frames<2: return np.zeros((gs,gs),dtype=np.float32)
+        w=np.hanning(nperseg); spec=np.zeros((gs//2+1,gs),dtype=np.float32)
         for i in range(n_frames):
-            start = i * hop
-            end = min(start + nperseg, len(waveform))
-            if end - start < nperseg // 2: continue
-            frame = np.zeros(nperseg, dtype=np.float32)
-            seg = waveform[start:end]
-            frame[:len(seg)] = seg * window[:len(seg)]
-            fft = np.abs(np.fft.rfft(frame))
-            col = int(i * gs / n_frames)
-            if col >= gs: col = gs - 1
-            bins = min(len(fft), gs // 2 + 1)
-            spec[:bins, col] += fft[:bins]
-        spec = np.flipud(spec[:gs // 2 + 1, :gs])
-        if spec.shape[0] > gs: spec = spec[:gs, :]
-        elif spec.shape[0] < gs:
-            pad = np.zeros((gs - spec.shape[0], gs), dtype=np.float32)
-            spec = np.concatenate([pad, spec], axis=0)
-        if spec.shape[1] > gs: spec = spec[:, :gs]
-        elif spec.shape[1] < gs:
-            pad = np.zeros((gs, gs - spec.shape[1]), dtype=np.float32)
-            spec = np.concatenate([spec, pad], axis=1)
-        spec = np.log1p(spec)
-        vmin = spec.min(); vmax = spec.max()
-        if vmax - vmin > 1e-8:
-            spec = (spec - vmin) / (vmax - vmin)
-        else: spec.fill(0.5)
-        return spec.astype(np.float32)
+            s=i*hop; e=min(s+nperseg,len(wf))
+            if e-s<nperseg//2: continue
+            fr=np.zeros(nperseg,dtype=np.float32); sg_=wf[s:e]; fr[:len(sg_)]=sg_*w[:len(sg_)]
+            fft=np.abs(np.fft.rfft(fr)); col=int(i*gs/n_frames)
+            if col>=gs: col=gs-1
+            bins=min(len(fft),gs//2+1); spec[:bins,col]+=fft[:bins]
+        spec=np.flipud(spec[:gs//2+1,:gs])
+        if spec.shape[0]>gs: spec=spec[:gs,:]
+        elif spec.shape[0]<gs: spec=np.concatenate([np.zeros((gs-spec.shape[0],gs),dtype=np.float32),spec],axis=0)
+        if spec.shape[1]>gs: spec=spec[:,:gs]
+        elif spec.shape[1]<gs: spec=np.concatenate([spec,np.zeros((gs,gs-spec.shape[1]),dtype=np.float32)],axis=1)
+        spec=np.log1p(spec); vmin,vmax=spec.min(),spec.max()
+        return ((spec-vmin)/(vmax-vmin)).astype(np.float32) if vmax-vmin>1e-8 else np.full((gs,gs),.5,dtype=np.float32)
 
+# ── Chladni Oscilloscope ──
 
 class ChladniOscilloscope:
-    """
-    128x128 nodal line patterns from latent vectors — circular Chladni plate.
+    def __init__(self, gs=64, nm=128):
+        self.gs=gs; self.nm=min(nm,128)
+        self._modes = [(i%16, i//16+1) for i in range(self.nm)]
+        y,x=np.indices((gs,gs)); cx=(gs-1)/2.; cy=(gs-1)/2.
+        self._r=np.clip(np.sqrt(((x-cx)/cx)**2+((y-cy)/cy)**2)/np.sqrt(2),0,1)
+        self._t=np.arctan2(y-cy,x-cx); self._last_field=None
 
-    Real Chladni patterns form when a circular plate vibrates at resonant
-    frequencies. Sand collects at the nodes (still points) creating organic
-    concentric rings, radial spokes, and interference patterns.
+    def compute(self, latents):
+        if latents.dim()==3: latents=latents[0]
+        latents=latents.cpu().numpy().astype(np.float32)
+        nt,nd=latents.shape; gs=self.gs
+        nmp=min(self.nm,nd//2)
+        ma=np.zeros(nmp,dtype=np.float32); ap=np.zeros(nmp,dtype=np.float32)
+        ps=abs(int(np.sum(latents[0,:min(8,nd)]))+hash(tuple(latents[0,:min(4,nd)].astype(float))))%100000
+        np.random.seed(ps); po=np.random.randn(nmp).astype(np.float32)*.3
+        for i in range(nmp):
+            ad=4*min(i,nd//4-1); pd=ad+1
+            ma[i]=np.max(np.abs(latents[:,ad])) if ad<nd else np.random.randn()*.1
+            ap[i]=(np.mean(latents[:,pd])+po[i])*np.pi
+        si=np.argsort(ma)[::-1]; tn=max(8,nmp//3); ai=si[:tn]
+        cm=np.ones_like(self._r); ctr=self._r<.15; cm[ctr]=.2+.8*(self._r[ctr]/.15)
+        field=np.zeros((gs,gs),dtype=np.float32)
+        for idx in ai:
+            amp=ma[idx]
+            if amp<1e-4: continue
+            ph=ap[idx]; m,n=self._modes[idx]; w=1/(1+.3*n)
+            rd=np.sin(np.pi*n*self._r); ag=np.cos(m*self._t+ph); field+=amp*w*rd*ag
+        field*=cm; self._last_field=field.copy()
+        lm,th=self._detect_lines(field)
+        return lm,th
 
-    We aggregate latent mode amplitudes across all time steps, build the FULL
-    2D circular Chladni field, detect zero-crossings (nodal lines), and
-    compute variable line thickness from the local gradient magnitude.
-    """
-
-    def __init__(self, grid_size: int = 128, num_modes: int = 128):
-        self.grid_size = grid_size
-        self.num_modes = min(num_modes, 128)
-
-        # Build mode list: (angular_order, radial_order)
-        self._modes: list[tuple[int, int]] = []
-        for i in range(self.num_modes):
-            m = i % 16           # 0=rings, 1=diameter, 2=cross, ...
-            n = (i // 16) + 1    # 1=one ring, 2=two rings, ...
-            self._modes.append((m, n))
-
-        # Precompute spatial coordinates centered in the grid
-        gs = grid_size
-        y_idx, x_idx = np.indices((gs, gs))
-        cx = (gs - 1) / 2.0
-        cy = (gs - 1) / 2.0
-        # Normalize radius so corners reach 1.0 (fills full square grid)
-        self._radius = np.sqrt(((x_idx - cx) / cx) ** 2 + ((y_idx - cy) / cy) ** 2)
-        self._radius = self._radius / np.sqrt(2.0)  # corners = 1.0
-        self._radius = np.clip(self._radius, 0.0, 1.0)
-        self._theta = np.arctan2(y_idx - cy, x_idx - cx)
-
-    def compute(self, latents: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Compute FULL 2D circular Chladni field from aggregated latent data.
-
-        Instead of sampling row-by-row, we average mode amplitudes across all
-        time steps and build the complete 128x128 circular interference pattern.
-
-        Args:
-            latents: [1, N, 512] or [N, 512] from AudioBrainCore.
-
-        Returns:
-            (line_mask, thickness):
-                line_mask: [128, 128] bool — nodal lines
-                thickness: [128, 128] float32 — line width (0=no line, 1=thick)
-        """
-        if latents.dim() == 3:
-            latents = latents[0]
-        latents = latents.cpu().numpy().astype(np.float32)
-
-        n_time, n_dims = latents.shape
-        gs = self.grid_size
-
-        # ── Aggregate latent amplitudes across time ──
-        # Each latent dimension pair = (amplitude, phase) for one mode
-        num_mode_pairs = min(self.num_modes, n_dims // 4)
-        # Take the RMS amplitude across time for each mode
-        avg_amps = np.zeros(num_mode_pairs, dtype=np.float32)
-        avg_phases = np.zeros(num_mode_pairs, dtype=np.float32)
-        for i in range(num_mode_pairs):
-            amp_dim = 4 * i
-            phase_dim = 4 * i + 1
-            avg_amps[i] = np.sqrt(np.mean(latents[:, amp_dim] ** 2))
-            avg_phases[i] = np.mean(latents[:, phase_dim]) * np.pi
-
-        # ── Build full 2D Chladni field ──
-        field = np.zeros((gs, gs), dtype=np.float32)
-        for i in range(num_mode_pairs):
-            amp = avg_amps[i]
-            if amp < 1e-4:
-                continue
-            phase = avg_phases[i]
-            m, n = self._modes[i]
-
-            # Radial: Bessel-like radial oscillation
-            radial = np.sin(np.pi * n * self._radius)
-            # Angular: cos(m·θ + φ)
-            angular = np.cos(m * self._theta + phase)
-            frame = amp * radial * angular
-            field += frame
-
-        # ── Detect nodal lines with thickness ──
-        line_mask, thickness = self._detect_nodal_lines_with_thickness(field)
-
-        return line_mask, thickness
-
-    def _detect_nodal_lines_with_thickness(
-        self, field: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Detect zero-crossings and compute line thickness from gradient.
-
-        Where the field changes sign between adjacent cells, we mark a nodal
-        line. The thickness is inversely proportional to the gradient magnitude:
-          - Steep crossing → thin, crisp line
-          - Gentle crossing → thicker, sandy line
-
-        Returns:
-            line_mask: [gs, gs] bool
-            thickness: [gs, gs] float32 in [0, 1]
-        """
-        gs = self.grid_size
-        sign_field = np.sign(field)
-
-        # Compute gradient magnitude (Sobel-like)
-        gy = np.zeros_like(field)
-        gx = np.zeros_like(field)
-        gy[1:-1] = field[2:] - field[:-2]
-        gx[:, 1:-1] = field[:, 2:] - field[:, :-2]
-        grad_mag = np.sqrt(gy ** 2 + gx ** 2)
-
-        # Normalize gradient to [0, 1] per column (for even distribution)
-        grad_norm = np.zeros_like(grad_mag)
+    def _detect_lines(self, field):
+        gs=self.gs; sf=np.sign(field)
+        gy=np.zeros_like(field); gx=np.zeros_like(field)
+        gy[1:-1]=field[2:]-field[:-2]; gx[:,1:-1]=field[:,2:]-field[:,:-2]
+        gm=np.sqrt(gy**2+gx**2); gn=np.zeros_like(gm)
         for col in range(gs):
-            col_grad = grad_mag[:, col]
-            hi = np.percentile(col_grad, 95)
-            if hi > 1e-8:
-                grad_norm[:, col] = np.clip(col_grad / hi, 0.0, 1.0)
-            else:
-                grad_norm[:, col] = 0.5
+            cg=gm[:,col]; hi=np.percentile(cg,95)
+            gn[:,col]=np.clip(cg/hi,0,1) if hi>1e-8 else .5
+        rl=np.zeros((gs,gs),dtype=bool)
+        he=sf[:,:-1]!=sf[:,1:]; rl[:,:-1]|=he; rl[:,1:]|=he
+        ve=sf[:-1,:]!=sf[1:,:]; rl[:-1,:]|=ve; rl[1:,:]|=ve
+        de=sf[:-1,:-1]!=sf[1:,1:]; rl[:-1,:-1]|=de; rl[1:,1:]|=de
+        d2=sf[:-1,1:]!=sf[1:,:-1]; rl[:-1,1:]|=d2; rl[1:,:-1]|=d2
+        lines=rl.copy()
+        th=np.zeros((gs,gs),dtype=np.float32)
+        th[lines]=np.clip(1-gn[lines],.05,1); th[lines]=th[lines]**.4
+        return lines, th.astype(np.float32)
 
-        # Find sign changes (all 4 directions)
-        lines = np.zeros((gs, gs), dtype=bool)
-        h_edges = sign_field[:, :-1] != sign_field[:, 1:]
-        lines[:, :-1] |= h_edges
-        lines[:, 1:] |= h_edges
-        v_edges = sign_field[:-1, :] != sign_field[1:, :]
-        lines[:-1, :] |= v_edges
-        lines[1:, :] |= v_edges
-        d1_edges = sign_field[:-1, :-1] != sign_field[1:, 1:]
-        lines[:-1, :-1] |= d1_edges
-        lines[1:, 1:] |= d1_edges
-        d2_edges = sign_field[:-1, 1:] != sign_field[1:, :-1]
-        lines[:-1, 1:] |= d2_edges
-        lines[1:, :-1] |= d2_edges
-
-        # Thickness: inverse of gradient at line positions
-        # High gradient → thin (0.0), low gradient → thick (1.0)
-        thickness = np.zeros((gs, gs), dtype=np.float32)
-        thickness[lines] = np.clip(1.0 - grad_norm[lines], 0.05, 1.0)
-
-        return lines, thickness.astype(np.float32)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Unified Visualizer — with overlay support
-# ═══════════════════════════════════════════════════════════════
+# ── Visualizer ──
 
 class AudioBrainVisualizer:
-    """
-    Artistic visualizer for AudioBrain latent space.
+    def __init__(self, grid_size=64, chars="dots", colors="heat", chladni_chars="lines", chladni_color="white", force_color=False):
+        self.grid_size=grid_size
+        self.chars=CHAR_RAMPS.get(chars,CHAR_RAMPS["ascii"])
+        self.colors=COLOR_SCHEMES.get(colors,_heat)
+        self.chladni_chars=chladni_chars; self.chladni_color=chladni_color
+        self._use_color=force_color or _supports_color()
+        self.spectrogram=LatentSpectrogram(grid_size)
+        self.oscilloscope=ChladniOscilloscope(grid_size)
+        self.real_spec=RealSpectrogram(gs=64)
 
-    Two complementary 128x128 views derived entirely from the ML product:
-      - Latent spectrogram: (t, dim) activation grid — colored background
-      - Chladni nodal lines: circular plate interference line art — overlay
+    def compute_views(self, latents):
+        lm,th=self.oscilloscope.compute(latents); cf=self.oscilloscope._last_field
+        return {"spectrogram":self.spectrogram.compute(latents),"chladni_lines":lm,"chladni_thickness":th,"chladni_field":cf}
 
-    Output modes:
-      - Terminal: ANSI-colored ASCII art with character-based overlay
-      - HTML: self-contained dark-themed page with CSS grid + SVG overlay
-    """
-
-    def __init__(
-        self,
-        grid_size: int = 128,
-        chars: str = "dots",
-        colors: str = "heat",
-        chladni_chars: str = "lines",
-        chladni_color: str = "white",
-        force_color: bool = False,
-    ):
-        self.grid_size = grid_size
-        self.chars = CHAR_RAMPS.get(chars, CHAR_RAMPS["ascii"])
-        self.colors = COLOR_SCHEMES.get(colors, COLOR_SCHEMES["heat"])
-        self.chladni_chars = chladni_chars
-        self.chladni_color = chladni_color
-        self._use_color = force_color or _supports_color()
-
-        self.spectrogram = LatentSpectrogram(grid_size=grid_size)
-        self.oscilloscope = ChladniOscilloscope(grid_size=grid_size)
-        self.waveform = WaveformBar(width=grid_size, height=12)
-        self.waveform_line = WaveformLine(width=256, height=40)
-        self.real_spec = RealSpectrogram(grid_size=grid_size)
-
-    # ── Core computation ──────────────────────────────────────
-
-    def compute_views(self, latents: torch.Tensor) -> dict:
-        """Compute both views. Chladni returns (line_mask, thickness)."""
-        lines, thickness = self.oscilloscope.compute(latents)
-        return {
-            "spectrogram": self.spectrogram.compute(latents),
-            "chladni_lines": lines,
-            "chladni_thickness": thickness,
-        }
-
-    # ── ANSI terminal with overlay ────────────────────────────
-
-    def _field_to_ansi(self, field: np.ndarray) -> list[str]:
-        """Render a 2D field as ANSI-colored ASCII rows."""
-        n_chars = len(self.chars)
-        rows = []
-        for y in range(self.grid_size):
-            parts = []
-            for x in range(self.grid_size):
-                v = float(field[y, x])
-                idx = min(int(v * (n_chars - 1)), n_chars - 1)
-                ch = self.chars[idx]
-                if self._use_color:
-                    r, g, b = self.colors(v)
-                    parts.append(_color_fn(r, g, b, ch))
+    def _build_char_grid(self, field, overlay_mask=None):
+        gs=field.shape[0]; nc=len(self.chars); cells=[]
+        for y in range(gs):
+            for x in range(gs):
+                v=float(field[y,x])
+                if overlay_mask is not None and overlay_mask[y,x]:
+                    ch=self.chars[-1]
+                    cells.append(f'<span class="ch">{ch}</span>')
                 else:
-                    parts.append(ch)
-            rows.append("".join(parts))
-        return rows
+                    idx=min(int(v*(nc-1)),nc-1); ch=self.chars[idx]
+                    r,g,b=self.colors(v)
+                    cells.append(f'<span style="color:rgb({r},{g},{b})">{ch}</span>')
+        return "\n".join(cells)
 
-    def _field_to_ansi_overlay(
-        self, field: np.ndarray, line_mask: np.ndarray
-    ) -> list[str]:
-        """
-        Render spectrogram with Chladni lines overlaid.
-
-        Spectrogram cells get their normal color character.
-        Where a Chladni nodal line crosses, the character is replaced
-        with a bright line-drawing character.
-        """
-        n_chars = len(self.chars)
-        rows = []
-        for y in range(self.grid_size):
-            parts = []
-            for x in range(self.grid_size):
-                v = float(field[y, x])
-                if line_mask[y, x]:
-                    # Nodal line: use bright line character
-                    # Pick direction-appropriate glyph
-                    has_h = (x > 0 and line_mask[y, x - 1]) or (x < self.grid_size - 1 and line_mask[y, x + 1])
-                    has_v = (y > 0 and line_mask[y - 1, x]) or (y < self.grid_size - 1 and line_mask[y + 1, x])
-                    if has_h and has_v:
-                        ch = "┼"
-                    elif has_h:
-                        ch = "─"
-                    elif has_v:
-                        ch = "│"
-                    else:
-                        ch = "·"
-                    if self._use_color:
-                        # Bright white/contrast for lines
-                        r, g, b = self.colors(0.9)
-                        parts.append(_color_fn(255, 255, 255, ch))
-                    else:
-                        parts.append(ch)
-                else:
-                    idx = min(int(v * (n_chars - 1)), n_chars - 1)
-                    ch = self.chars[idx]
-                    if self._use_color:
-                        r, g, b = self.colors(v)
-                        parts.append(_color_fn(r, g, b, ch))
-                    else:
-                        parts.append(ch)
-            rows.append("".join(parts))
-        return rows
-
-    def render_terminal(
-        self,
-        latents: torch.Tensor,
-        title: str = "AudioBrain",
-        show: str = "overlay",
-    ) -> str:
-        """
-        Render to terminal.
-
-        Args:
-            latents: [1, N, 512] latent vectors.
-            title: Display title.
-            show: "overlay" (spectrogram + Chladni lines),
-                  "spectrogram", "chladni", or "both" (separate panels).
-
-        Returns:
-            Terminal string with ANSI escapes.
-        """
-        views = self.compute_views(latents)
-        sep = "  " + "─" * self.grid_size
-        output_lines = []
-        output_lines.append(f"\n  {title} — {self.grid_size}×{self.grid_size}")
-        output_lines.append(f"  Chars: {self.chars}  Colors: {list(COLOR_SCHEMES.keys())}")
-        output_lines.append("")
-
-        if show == "overlay":
-            output_lines.append("  [ Spectrogram + Chladni Nodal Lines ]")
-            output_lines.append(sep)
-            for row in self._field_to_ansi_overlay(
-                views["spectrogram"], views["chladni_lines"]
-            ):
-                output_lines.append(f"  {row}")
-            output_lines.append(sep)
-            output_lines.append("")
-        elif show in ("spectrogram", "both"):
-            output_lines.append("  [ Latent Spectrogram ]")
-            output_lines.append(sep)
-            for row in self._field_to_ansi(views["spectrogram"]):
-                output_lines.append(f"  {row}")
-            output_lines.append(sep)
-            output_lines.append("")
-        if show in ("chladni", "both"):
-            output_lines.append("  [ Chladni Nodal Lines ]")
-            output_lines.append(sep)
-            for row in self._field_to_ansi_overlay(
-                np.zeros_like(views["spectrogram"]), views["chladni_lines"]
-            ):
-                output_lines.append(f"  {row}")
-            output_lines.append(sep)
-            output_lines.append("")
-
-        result = "\n".join(output_lines)
-        print(result)
-        return result
-
-    # ── HTML rendering — spectrogram with Chladni SVG overlay ──
-
-    def build_html(
-        self,
-        latents: torch.Tensor,
-        audio_data: bytes | None = None,
-        title: str = "AudioBrain",
-        metadata: dict | None = None,
-        waveform: np.ndarray | None = None,
-        sample_rate: int = 32000,
-    ) -> str:
-        """
-        Build self-contained HTML with waveform bar, real spectrogram,
-        latent spectrogram, and Chladni nodal line overlay.
-        """
-        views = self.compute_views(latents)
-        gs = self.grid_size
-
-        spec = views["spectrogram"]
-        lines = views["chladni_lines"]
-
-        # ── Spectrogram as pixel-perfect PPM image ──
-        spec_img = self._field_to_data_url(spec)
-
-        # ── Chladni nodal lines as SVG ──
-        svg_paths = self._lines_to_svg(lines, gs, thickness=views.get("chladni_thickness"))
-
-        # ── Bottom strip: oscilloscope line + waveform bar + spectrogram ──
-        bottom_html = ""
-        if waveform is not None and len(waveform) > 0:
-            line_svg = self.waveform_line.to_svg(waveform, width_px=640, height_px=60)
-            wf_field = self.waveform.compute(waveform)
-            wf_img = self._field_to_data_url(wf_field)
-            wf_rows = self.waveform.height
-            wf_cols = self.waveform.width
-            real_field = self.real_spec.compute(waveform, sample_rate)
-            real_img = self._field_to_data_url(real_field)
-            bottom_html = (
-                '<div class="strip-box">\n'
-                '  <span class="box-label">Oscilloscope</span>\n'
-                '  <div class="strip">\n'
-                f'    <svg viewBox="0 0 640 60" preserveAspectRatio="xMidYMid meet">\n      {line_svg}\n    </svg>\n'
-                '  </div>\n'
-                '</div>\n'
-                '<div class="strip-box">\n'
-                '  <span class="box-label">Waveform</span>\n'
-                '  <div class="strip">\n'
-                f'    <img src="{wf_img}" style="width:100%;height:100%;display:block;image-rendering:pixelated;" alt="">\n'
-                '  </div>\n'
-                '</div>\n'
-                '<div class="strip-box">\n'
-                '  <span class="box-label">Spectrogram</span>\n'
-                '  <div class="strip">\n'
-                f'    <img src="{real_img}" style="width:100%;height:100%;display:block;image-rendering:pixelated;" alt="">\n'
-                '  </div>\n'
-                '</div>\n'
-            )
-
-
-        # ── Audio player ──
-        audio_html = ""
-        if audio_data:
-            b64 = base64.b64encode(audio_data).decode("utf-8")
-            audio_html = (
-                '<div class="player">\n'
-                f'  <audio controls src="data:audio/wav;base64,{b64}"></audio>\n'
-                '</div>\n'
-            )
-
-        # ── Metadata ──
-        meta_html = ""
+    def build_html(self, latents, audio_data=None, title="AudioBrain", metadata=None, waveform=None, sample_rate=32000):
+        views=self.compute_views(latents); gs=self.grid_size
+        spec=views["spectrogram"]; lines=views["chladni_lines"]
+        latent_grid=self._build_char_grid(spec, overlay_mask=lines)
+        real_grid=""
+        if waveform is not None and len(waveform)>0:
+            rf=self.real_spec.compute(waveform,sample_rate)
+            real_grid=self._build_char_grid(rf)
+        ns=latents.shape[1] if latents.dim()==3 else latents.shape[0]; nd=latents.shape[-1]
+        meta_rows=""
         if metadata:
-            for k, v in metadata.items():
-                meta_html += (
-                    f'<div class="meta"><span class="key">{k}</span> '
-                    f'<span class="val">{v}</span></div>\n'
-                )
+            for k,v in metadata.items():
+                meta_rows+=f'<div class="kv-row"><span class="kv-key">{k}</span><span class="kv-val">{v}</span></div>'
+        else: meta_rows+=f'<div class="kv-row"><span class="kv-key">file</span><span class="kv-val">{title}</span></div>'
+        b64=base64.b64encode(audio_data).decode("utf-8") if audio_data else ""
 
-        n_segs = latents.shape[1] if latents.dim() == 3 else latents.shape[0]
-        n_dims = latents.shape[-1]
+        # ── SVG micrographics ──
+        _radar='<rect x="6" y="0" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="6" y="1" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="6" y="2" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="6" y="3" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="7" y="0" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="7" y="3" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="8" y="0" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="8" y="3" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="9" y="0" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="9" y="1" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="9" y="2" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="9" y="3" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+               '<rect x="5" y="0" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="5" y="1" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="5" y="2" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="5" y="3" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="10" y="0" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="10" y="1" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="10" y="2" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="10" y="3" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+               '<rect x="0" y="1" width="16" height="1" fill="var(--dim)" opacity="0.6"/>' \
+               '<rect x="0" y="2" width="16" height="1" fill="var(--dim)" opacity="0.6"/>'
+        _blocks='<rect x="2" y="0" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+                '<rect x="5" y="0" width="1" height="1" fill="var(--dim)" opacity="0.7"/>' \
+                '<rect x="8" y="0" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+                '<rect x="9" y="0" width="1" height="1" fill="var(--dim)" opacity="0.4"/>' \
+                '<rect x="13" y="0" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+                '<rect x="15" y="0" width="1" height="1" fill="var(--dim)" opacity="0.3"/>' \
+                '<rect x="0" y="1" width="1" height="1" fill="var(--dim)" opacity="0.3"/>' \
+                '<rect x="2" y="1" width="1" height="1" fill="var(--dim)" opacity="0.4"/>' \
+                '<rect x="3" y="1" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+                '<rect x="7" y="1" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+                '<rect x="11" y="1" width="1" height="1" fill="var(--dim)" opacity="0.7"/>' \
+                '<rect x="14" y="1" width="1" height="1" fill="var(--dim)" opacity="0.4"/>' \
+                '<rect x="1" y="2" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+                '<rect x="4" y="2" width="1" height="1" fill="var(--dim)" opacity="0.3"/>' \
+                '<rect x="6" y="2" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+                '<rect x="8" y="2" width="1" height="1" fill="var(--dim)" opacity="0.5"/>' \
+                '<rect x="10" y="2" width="1" height="1" fill="var(--dim)" opacity="0.7"/>' \
+                '<rect x="12" y="2" width="1" height="1" fill="var(--dim)" opacity="0.4"/>' \
+                '<rect x="15" y="2" width="1" height="1" fill="var(--dim)" opacity="0.6"/>'
+        _wave='<rect x="0" y="2" width="1" height="1" fill="var(--dim)" opacity="0.3"/>' \
+              '<rect x="1" y="2" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+              '<rect x="2" y="3" width="1" height="1" fill="var(--dim)" opacity="0.9"/>' \
+              '<rect x="3" y="3" width="1" height="1" fill="var(--dim)" opacity="0.85"/>' \
+              '<rect x="4" y="2" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+              '<rect x="5" y="1" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+              '<rect x="6" y="0" width="1" height="1" fill="var(--dim)" opacity="0.85"/>' \
+              '<rect x="7" y="0" width="1" height="1" fill="var(--dim)" opacity="0.9"/>' \
+              '<rect x="8" y="1" width="1" height="1" fill="var(--dim)" opacity="0.75"/>' \
+              '<rect x="9" y="1" width="1" height="1" fill="var(--dim)" opacity="0.35"/>' \
+              '<rect x="10" y="2" width="1" height="1" fill="var(--dim)" opacity="0.8"/>' \
+              '<rect x="11" y="3" width="1" height="1" fill="var(--dim)" opacity="0.9"/>' \
+              '<rect x="12" y="3" width="1" height="1" fill="var(--dim)" opacity="0.85"/>' \
+              '<rect x="13" y="2" width="1" height="1" fill="var(--dim)" opacity="0.55"/>' \
+              '<rect x="14" y="1" width="1" height="1" fill="var(--dim)" opacity="0.6"/>' \
+              '<rect x="15" y="0" width="1" height="1" fill="var(--dim)" opacity="0.85"/>'
 
-        html = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AudioBrain — {title}</title>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    background: #08080a;
-    color: #888;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    padding: 2em;
-    min-height: 100vh;
-  }}
-  .container {{ max-width: 900px; margin: 0 auto; }}
-  h1 {{
-    font-size: 11px; font-weight: 400; color: #555;
-    letter-spacing: 0.4em; text-transform: uppercase;
-    margin-bottom: 0.3em; padding: 0 1em;
-  }}
-  h2 {{
-    font-size: 18px; font-weight: 400; color: #ccc;
-    margin-bottom: 0.15em; padding: 0 1em;
-  }}
-  .subtitle {{
-    color: #444; margin-bottom: 2em; font-size: 10px; padding: 0 1em;
-  }}
-  /* ── Box: outlined container for each panel ── */
-  .box {{
-    border: 1px solid #1a1a1a;
-    padding: 1.2em;
-    margin: 0 0 1.5em 0;
-    position: relative;
-  }}
-  .box-label {{
-    position: absolute; top: -8px; left: 12px;
-    background: #08080a; padding: 0 8px;
-    color: #333; font-size: 9px;
-    letter-spacing: 0.2em; text-transform: uppercase;
-  }}
-  /* ── Main canvas ── */
-  .canvas-wrap {{
-    position: relative;
-    width: 100%;
-    aspect-ratio: 1/1;
-    margin: 0 auto;
-    image-rendering: pixelated;
-  }}
-  .spec-layer {{
-    display: grid;
-    grid-template-columns: repeat({gs}, 1fr);
-    grid-template-rows: repeat({gs}, 1fr);
-    position: absolute; inset: 0;
-    width: 100%; height: 100%; gap: 0;
-  }}
-  .spec-layer .cell {{
-    width: 100%; height: 100%; min-width: 0; min-height: 0;
-    border: 0; outline: 0;
-  }}
-  .chladni-layer {{
-    position: absolute; inset: 0;
-    width: 100%; height: 100%;
-    pointer-events: none; z-index: 2;
-  }}
-  .chladni-layer rect {{ fill: #ffffff; }}
-  /* ── Bottom strips ── */
-  .strip-box {{
-    border: 1px solid #1a1a1a;
-    padding: 1em;
-    margin: 0 0 1em 0;
-    position: relative;
-  }}
-  .strip {{
-    height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }}
-  .strip svg {{ width: 100%; height: 100%; }}
-  .strip-row {{
-    display: flex; gap: 1em; flex-wrap: wrap;
-  }}
-  .strip-panel {{
-    flex: 1 1 100%;
-    border: 1px solid #1a1a1a;
-    padding: 0.8em; position: relative;
-  }}
-  .meta {{ margin: 0.3em 0; font-size: 10px; }}
-  .key {{ color: #444; }}
-  .val {{ color: #777; }}
-  .player {{ margin: 0 0 2em 0; }}
-  audio {{ width: 100%; filter: invert(0.85); opacity: 0.7; }}
-  audio:hover {{ opacity: 1; }}
-  .section-label {{
-    color: #333; font-size: 9px; letter-spacing: 0.2em;
-    text-transform: uppercase; margin-bottom: 0.8em;
-  }}
-  .legend {{
-    display: flex; justify-content: center; gap: 2em;
-    margin: 1em 0 2em; font-size: 9px; color: #333;
-  }}
-  .legend span {{ display: flex; align-items: center; gap: 5px; }}
-  .legend .swatch {{
-    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  }}
-  footer {{
-    margin-top: 3em; font-size: 9px; color: #222; text-align: center;
-  }}
-</style>
-</head>
-<body>
-<div class="container">
-  <h1>AudioBrain</h1>
-  <h2>{title}</h2>
-  <div class="subtitle">
-    {n_segs} segments &middot; {n_dims}-dim latent space &middot; {gs}x{gs} grid
-  </div>
-
-  {audio_html}
-
-  <div class="box">
-    <span class="box-label">Latent Spectrogram + Chladni Nodal Lines</span>
-    <div class="canvas-wrap">
-    <img src="{spec_img}" style="width:100%;height:100%;display:block;image-rendering:pixelated;" alt="">
-    <svg class="chladni-layer" viewBox="0 0 {gs} {gs}" preserveAspectRatio="none">
-      {svg_paths}
-    </svg>
-    </div>
-  </div>
-
-  {bottom_html}
-
-  <div class="legend">
-    <span><span class="swatch" style="background:rgb(0,0,0);"></span> latent dim activation</span>
-    <span><span class="swatch" style="background:rgb(255,255,200);"></span> chladni nodal lines</span>
-  </div>
-
-  <div class="box">
-    <span class="box-label">Metadata</span>
-    {meta_html}
-  </div>
-
-  <footer>AudioBrain v0.2.0 &middot; spectrogram + chladni oscilloscope &middot; {n_segs} segments</footer>
+        return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>AVT — {title}</title><style>
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+*{{margin:0;padding:0;box-sizing:border-box}}
+:root{{--bg:#000000;--fg:#bbbbbb;--dim:#555555;--accent:#ffffff;--border:#333333;--panel:#0a0a0a;--btn-bg:#0a0a0a;--btn-fg:#bbbbbb;--btn-bd:#333333;--btn-hv:#ffffff;--wf:rgba(255,255,255,.55);--pb:#0a0a0a;--pg:#222222;--pff:#bbbbbb}}
+[data-theme="light"]{{--bg:#eeeeee;--fg:#333333;--dim:#999999;--accent:#000000;--border:#bbbbbb;--panel:#f5f5f5;--btn-bg:#f5f5f5;--btn-fg:#333333;--btn-bd:#bbbbbb;--btn-hv:#000000;--wf:rgba(0,0,0,.5);--pb:#f5f5f5;--pg:#dddddd;--pff:#333333}}
+html,body{{height:100%}}
+body{{background:var(--bg);color:var(--fg);font-family:'VT323','Courier New',Courier,monospace;font-size:16px;line-height:1.2}}
+.container{{display:flex;height:100vh;gap:1px;background:var(--border)}}
+.sidebar{{width:260px;min-width:260px;background:var(--panel);display:flex;flex-direction:column;padding:8px;gap:4px;overflow:hidden}}
+.sidebar-header{{text-align:center;border-bottom:1px solid var(--border);padding-bottom:6px;flex-shrink:0}}
+.sidebar-header h1{{font-size:20px;font-weight:400;color:var(--accent);letter-spacing:.3em;text-transform:uppercase;margin:0}}
+.sidebar-header .sub{{font-size:11px;color:var(--dim);margin-top:1px}}
+.section{{border:1px solid var(--border);padding:4px 6px;flex-shrink:0}}
+.section-title{{font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.2em;border-bottom:1px solid var(--border);padding-bottom:1px;margin-bottom:2px}}
+.kv-row{{display:flex;justify-content:space-between;margin:0}}
+.kv-key{{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.1em}}
+.kv-val{{color:var(--fg);font-size:12px;text-align:right}}
+.explain{{font-size:11px;color:var(--dim);line-height:1.2}}
+.explain b{{color:var(--fg);font-weight:normal;display:block;font-size:12px;margin-top:4px;margin-bottom:0}}
+.micrograph{{flex-shrink:0;height:12px;opacity:.6;overflow:hidden}}
+.micrograph svg{{display:block;width:100%;height:100%}}
+.btn{{background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-bd);padding:4px 10px;cursor:pointer;font-size:12px;font-family:inherit;text-transform:uppercase;letter-spacing:.15em;margin-top:auto;flex-shrink:0}}
+.btn:hover{{background:var(--btn-hv);color:var(--bg);border-color:var(--accent)}}
+.main{{flex:1;background:var(--bg);display:flex;flex-direction:column;min-width:0}}
+.main-scroll{{flex:1;overflow-y:auto;padding:8px 12px 12px 12px;display:flex;flex-direction:column;gap:10px}}
+.main-sticky{{flex-shrink:0;position:sticky;top:0;z-index:10;background:var(--bg);padding:12px 12px 8px 12px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--border);margin-bottom:4px}}
+.main-header{{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border);padding-bottom:4px;flex-shrink:0}}
+.main-header h2{{font-size:24px;font-weight:400;color:var(--accent);text-transform:uppercase;letter-spacing:.2em;margin:0}}
+.main-header .meta{{font-size:14px;color:var(--dim);text-align:right}}
+.controls{{display:flex;align-items:center;gap:10px;flex-shrink:0}}
+.play-btn{{background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-bd);padding:4px 14px;cursor:pointer;font-size:18px;font-family:inherit;min-width:52px;text-align:center}}
+.play-btn:hover{{background:var(--btn-hv);color:var(--bg);border-color:var(--accent)}}
+.time{{font-size:16px;color:var(--fg);min-width:48px;font-variant-numeric:tabular-nums;text-align:right}}
+.progress{{flex:1;height:2px;background:var(--border);cursor:pointer;position:relative}}
+.progress-fill{{height:100%;background:var(--fg);width:0%;transition:width .1s linear}}
+.viz-panel{{border:1px solid var(--border);padding:8px 10px;flex-shrink:0;position:relative;overflow:hidden}}
+.viz-panel.real{{overflow:hidden}}
+.viz-label{{font-size:14px;color:var(--accent);text-transform:uppercase;letter-spacing:.2em;margin-bottom:6px}}
+.viz-label .pre{{color:var(--accent);opacity:.6}}
+.viz-row{{display:flex;gap:10px;flex-shrink:0}}
+.viz-row .viz-panel{{flex:1;min-width:0;height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center}}
+.waveform-outer{{width:100%;overflow:hidden}}
+.waveform{{white-space:pre;font-size:10px;font-family:'VT323','Courier New',monospace;line-height:1;color:var(--dim);overflow:hidden;width:100%;padding:2px 0}}
+.legend{{display:flex;justify-content:center;gap:2em;margin:4px 0;font-size:13px;color:var(--dim);flex-shrink:0}}
+.legend span{{display:flex;align-items:center;gap:4px}}
+.legend .sw{{display:inline-block;width:8px;height:8px;border:1px solid var(--border)}}
+.ascii-grid{{display:grid;grid-template-columns:repeat({gs},1fr);grid-template-rows:repeat({gs},1fr);align-items:center;justify-items:center;font-family:'VT323','Courier New',monospace;font-size:14px;line-height:.85;letter-spacing:-1px;user-select:none;width:100%;overflow:hidden}}
+.ascii-grid.real{{grid-template-columns:repeat({gs},1fr);font-size:{max(7,11-gs//16)}px;line-height:.4;overflow:hidden}}
+.ascii-grid.real span{{line-height:.3;display:inline-block;transform:scaleY(.6)}}
+.viz-panel.latent{{overflow:visible;display:flex;flex-direction:column}}
+.viz-panel.latent .ascii-grid{{align-self:center;width:100%;max-height:calc(100% - 26px)}}
+.ch{{color:var(--accent);font-size:14px;line-height:1}}
+.pnl-btn{{background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-bd);padding:2px 10px;cursor:pointer;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:.1em;position:absolute;top:6px;right:10px;z-index:5}}
+.pnl-btn:hover{{background:var(--btn-hv);color:var(--bg);border-color:var(--accent)}}
+footer{{color:var(--dim);font-size:13px;text-align:center;padding:4px 0;flex-shrink:0}}
+.tooltip{{display:none;position:absolute;z-index:10;background:rgba(2,2,8,.96);color:#ddd;padding:2px 6px;font-size:13px;font-family:'VT323',monospace;pointer-events:none}}
+::-webkit-scrollbar{{width:8px;height:8px}}
+::-webkit-scrollbar-track{{background:var(--bg);border-left:1px solid var(--border)}}
+::-webkit-scrollbar-thumb{{background:var(--border);border:1px solid var(--bg)}}
+::-webkit-scrollbar-thumb:hover{{background:var(--dim)}}
+*{{scrollbar-width:thin;scrollbar-color:var(--border) var(--bg)}}
+@media(max-width:800px){{.container{{flex-direction:column}}.sidebar{{width:100%;min-width:0;height:auto;overflow-y:auto}}.main{{overflow-y:visible}}}}
+</style></head><body data-theme="dark"><div class="container">
+<div class="sidebar">
+<div class="sidebar-header"><h1>A/V/T</h1><div class="sub">audiobrain</div></div>
+<div class="micrograph"><svg width="100%" height="100%" viewBox="0 0 16 4" preserveAspectRatio="none">{_radar}</svg></div>
+<div class="section"><div class="section-title">Generation</div>{meta_rows}</div>
+<div class="micrograph"><svg width="100%" height="100%" viewBox="0 0 16 3" preserveAspectRatio="none">{_blocks}</svg></div>
+<div class="section"><div class="section-title">Model</div>
+<div class="kv-row"><span class="kv-key">grid</span><span class="kv-val">{gs}&times;{gs}</span></div>
+<div class="kv-row"><span class="kv-key">dims</span><span class="kv-val">{nd}</span></div>
+<div class="kv-row"><span class="kv-key">seg</span><span class="kv-val">{ns}</span></div>
 </div>
-</body>
-</html>'''
+<div class="micrograph"><svg width="100%" height="100%" viewBox="0 0 16 4" preserveAspectRatio="none">{_wave}</svg></div>
+<div class="section"><div class="section-title">Visualization</div>
+<div class="explain">
+<b>Latent Spectrogram</b>Each cell = learned dimension activation. Colored by intensity, textured by character density.
+<b>Chladni Nodal Lines</b>Dominant resonant modes traced as bright chars at sign-change nodes.
+<b>Real Spectrogram</b>STFT frequency analysis &mdash; ML vs. signal.
+<b>Live Waveform</b>Real-time oscilloscope.
+</div></div>
+<div class="section"><div class="section-title">About</div>
+<div class="explain"><b>A/VT</b> maps sound to learned features and back. The visualizations ARE the ML product.</div>
+</div>
+<button class="btn" onclick="toggleTheme()">\u25d0 Toggle Theme</button>
+</div>
+<div class="main">
+<div class="main-sticky">
+<div class="main-header"><h2>{title}</h2><div class="meta">{ns} seg &middot; {nd} dims &middot; {gs}&times;{gs}</div></div>
+<div class="controls">
+<button class="play-btn" id="pb" onclick="tp()">\u25b6</button>
+<div class="progress" id="pr" onclick="sk(event)"><div class="progress-fill" id="pf"></div></div>
+<span class="time" id="td">0:00</span>
+</div>
+<audio id="ae" preload="metadata" src="data:audio/wav;base64,{b64}"></audio>
+<div class="viz-row">
+<div class="viz-panel"><div class="viz-label"><span class="pre">></span> Waveform</div>
+<div class="waveform-outer"><pre id="wf-pre" class="waveform"></pre></div></div>
+<div class="viz-panel real"><div class="viz-label"><span class="pre">></span> Real Spectrogram</div>
+<div class="ascii-grid real">{real_grid if real_grid else latent_grid}</div></div>
+</div>
+</div>
+<div class="main-scroll">
+<div class="viz-panel latent" id="latent-viz" onmousemove="st(event)" onmouseleave="ht()">
+<div class="viz-label"><span class="pre">></span> Latent + Chladni</div>
+<button class="pnl-btn" onclick="downloadPNG()" title="Download as PNG">\u2913 PNG</button>
+<div class="ascii-grid" id="latent-grid">{latent_grid}</div>
+<div id="tt" class="tooltip"></div>
+</div>
+<div class="legend">
+<span><span class="sw" style="background:var(--dim)"></span>low activation</span>
+<span><span class="sw" style="background:var(--accent)"></span>peak activation</span>
+<span><span class="sw" style="background:var(--accent);box-shadow:0 0 3px var(--accent)"></span>chladni nodes</span>
+</div>
+<footer>AV/T v0.5 &middot; {ns} segments</footer>
+</div></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+function toggleTheme(){{var b=document.body;b.setAttribute('data-theme',b.getAttribute('data-theme')==='light'?'dark':'light')}}
+var gridEl=document.getElementById('latent-grid');var tt=document.getElementById('tt');var GS={gs};
+function st(e){{var r=gridEl.getBoundingClientRect();var x=Math.floor((e.clientX-r.left)/r.width*GS);var y=Math.floor((e.clientY-r.top)/r.height*GS);if(x>=0&&x<GS&&y>=0&&y<GS){{tt.style.display='block';tt.style.left=(e.clientX-r.left+10)+'px';tt.style.top=(e.clientY-r.top-16)+'px';tt.textContent='['+x+','+y+']'}}}}
+function ht(){{tt.style.display='none'}}
+var ae=document.getElementById('ae');var wfPre=document.getElementById('wf-pre');
+var pb=document.getElementById('pb');var pr=document.getElementById('pr');
+var pf=document.getElementById('pf');var td=document.getElementById('td');
+var ac=null,an=null,aid=null;
+var rampChars="{''.join(c for c in self.chars if c.strip() or c == ' ')}".replace(/ /g,'');
+if(!rampChars)rampChars=' .:-=+*#%@';
+function tp(){{if(ae.paused){{ae.play();pb.textContent='\u23f8'}}else{{ae.pause();pb.textContent='\u25b6'}}}}
+ae.addEventListener('play',function(){{pb.textContent='\u23f8';
+if(!ac){{ac=new(window.AudioContext||window.webkitAudioContext)();var src=ac.createMediaElementSource(ae);an=ac.createAnalyser();an.fftSize=512;src.connect(an);an.connect(ac.destination)}}
+if(ac.state==='suspended')ac.resume();draw();}});
+ae.addEventListener('pause',function(){{pb.textContent='\u25b6';cancelAnimationFrame(aid)}});
+ae.addEventListener('ended',function(){{pb.textContent='\u25b6';cancelAnimationFrame(aid);wfPre.textContent='';pf.style.width='0%';td.textContent='0:00'}});
+ae.addEventListener('timeupdate',function(){{if(ae.duration){{var pct=(ae.currentTime/ae.duration)*100;pf.style.width=pct+'%';var m=Math.floor(ae.currentTime/60);var s=Math.floor(ae.currentTime%60);td.textContent=m+':'+(s<10?'0'+s:s)}}}});
+function sk(e){{if(!ae.duration)return;var rect=pr.getBoundingClientRect();var pct=(e.clientX-rect.left)/rect.width;ae.currentTime=pct*ae.duration}}
+function draw(){{aid=requestAnimationFrame(draw);if(!an)return;var bl=an.frequencyBinCount;var tdata=new Uint8Array(bl);an.getByteTimeDomainData(tdata);
+var COLS=80,ROWS=12;var chars=rampChars;var nc=chars.length;
+var grid=[];for(var r=0;r<ROWS;r++){{grid[r]=[];for(var c=0;c<COLS;c++)grid[r][c]=' '}}
+var step=Math.max(1,Math.floor(bl/COLS));
+for(var c=0;c<COLS;c++){{
+  var sum=0;var count=0;
+  for(var i=c*step;i<Math.min((c+1)*step,bl);i++){{sum+=tdata[i];count++}}
+  var avg=count>0?sum/count:128;
+  var row=Math.round((avg/255)*(ROWS-1));
+  var intensity=Math.abs(avg-128)/128;
+  var chIdx=Math.min(nc-1,Math.floor(intensity*(nc-1)));
+  grid[ROWS-1-row][c]=chars[chIdx];
+}}
+var lines=[];
+for(var r=0;r<ROWS;r++)lines.push(grid[r].join(''));
+wfPre.textContent=lines.join('\\n');
+}}
+function downloadPNG(){{var el=document.getElementById('latent-grid');if(!el)return;html2canvas(el,{{backgroundColor:getComputedStyle(document.body).getPropertyValue('--bg')}}).then(function(canvas){{var a=document.createElement('a');a.download='avt_latent_chladni.png';a.href=canvas.toDataURL('image/png');a.click()}}).catch(function(e){{console.error('PNG download failed:',e)}})}}
+</script></body></html>"""
 
-        return html
-
-    def _lines_to_svg(self, line_mask, gs, thickness=None):
-        """Convert nodal lines to SVG rects with variable thickness."""
-        rects = []
-        for y in range(gs):
-            for x in range(gs):
-                if not line_mask[y, x]:
-                    continue
-                if thickness is not None:
-                    t = float(thickness[y, x])
-                    sz = max(1, int(1 + t * 1.5))
-                else:
-                    sz = 1
-                rects.append(
-                    f'<rect x="{x}" y="{y}" width="{sz}" height="{sz}" '
-                    f'fill="#ffffff"/>'
-                )
-        return "\n      ".join(rects)
-
-    def _field_to_data_url(self, field):
-        """Convert a 2D field [H,W] in [0,1] to a base64 PPM image — zero gaps."""
-        import base64
-        h, w = field.shape
-        # Scale to 0-255 RGB bytes
-        rgb = np.zeros((h, w, 3), dtype=np.uint8)
-        for y in range(h):
-            for x in range(w):
-                r, g, b = self.colors(float(field[y, x]))
-                rgb[y, x] = [r, g, b]
-        # PPM P6 header
-        header = f'P6\n{w} {h}\n255\n'.encode('ascii')
-        data = header + rgb.tobytes()
-        b64 = base64.b64encode(data).decode('ascii')
-        return f'data:image/x-portable-pixmap;base64,{b64}'
-
-    def _build_css_grid(self, field, prefix):
-        """Build CSS grid cells for a square field."""
-        gs = field.shape[0]
-        cells = []
-        for y in range(gs):
-            for x in range(gs):
-                v = float(field[y, x])
-                r, g, b = self.colors(v)
-                cells.append(
-                    f'<div class="cell" '
-                    f'style="background:rgb({r},{g},{b});" '
-                    f'data-{prefix}-y="{y}" data-{prefix}-x="{x}">'
-                    f'</div>'
-                )
-        return "\n    ".join(cells)
-
-    def _build_css_grid_2d(self, field, prefix, h, w):
-        """Build CSS grid cells with arbitrary dimensions."""
-        cells = []
-        for y in range(h):
-            for x in range(w):
-                v = float(field[y, x])
-                r, g, b = self.colors(v)
-                cells.append(
-                    f'<div class="cell" '
-                    f'style="background:rgb({r},{g},{b});" '
-                    f'data-{prefix}-y="{y}" data-{prefix}-x="{x}">'
-                    f'</div>'
-                )
-        return "\n    ".join(cells)
-
-    def save_html(self, path, latents, audio_data=None, title="AudioBrain",
-                  metadata=None, waveform=None, sample_rate=32000):
-        """Save HTML artifact to file and return path."""
-        html = self.build_html(latents, audio_data, title, metadata, waveform, sample_rate)
-        Path(path).write_text(html, encoding="utf-8")
-        return str(path)
+    def save_html(self, path, latents, audio_data=None, title="AudioBrain", metadata=None, waveform=None, sample_rate=32000):
+        Path(path).write_text(self.build_html(latents,audio_data,title,metadata,waveform,sample_rate),encoding="utf-8"); return str(path)
 
 
-def visualize_latents(latents, grid_size=128, chars="dots", colors="heat",
-                      title="AudioBrain", show="overlay"):
-    """Quick one-shot terminal visualization."""
-    viz = AudioBrainVisualizer(grid_size=grid_size, chars=chars, colors=colors)
-    viz.render_terminal(latents, title=title, show=show)
+def visualize_latents(latents, grid_size=128, chars="dots", colors="heat", title="AudioBrain", show="overlay"):
+    viz=AudioBrainVisualizer(grid_size=grid_size,chars=chars,colors=colors); viz.render_terminal(latents,title=title,show=show)
