@@ -1,0 +1,2 @@
+[console_scripts]
+avt = audiobrain.tui.app:run
