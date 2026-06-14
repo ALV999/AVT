@@ -21,7 +21,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional as F
-from transformers import TransformerEncoder
+from torch.nn import TransformerEncoder
 
 
 class SoundscapeTransformer(nn.Module):
@@ -61,6 +61,7 @@ class SoundscapeTransformer(nn.Module):
         self.d_model = d_model
         self.nhead = nhead
         self.num_layers = num_layers
+        self.batch_first = batch_first
 
         # Verificar consistencia de hiperparámetros
         if d_model % nhead != 0:
@@ -68,14 +69,22 @@ class SoundscapeTransformer(nn.Module):
                 f"nhead ({nhead}) debe dividir exactamente a d_model ({d_model})"
             )
 
-        # Crear el encoder Transformer
-        self.encoder = TransformerEncoder(
+        # Crear capa base del encoder
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            num_layers=num_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             batch_first=batch_first,
+            activation='gelu',
+            norm_first=False,
+        )
+
+        # Crear el encoder Transformer con múltiples capas
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=num_layers,
+            norm=nn.LayerNorm(d_model),
         )
 
     def forward(
