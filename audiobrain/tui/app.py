@@ -15,22 +15,12 @@ from textual.widgets import (
     Button, Checkbox, Footer, Header, Input,
     Label, ListItem, ListView, Markdown, ProgressBar, Rule, Select, Static,
 )
+from rich.panel import Panel
+from rich.align import Align
+from rich.text import Text
 from audiobrain.processing.config import GenerationConfig, PreprocessingConfig
 from audiobrain.effects import EffectChain
 from audiobrain.model.visualizer import CHAR_RAMPS, COLOR_SCHEMES
-
-# ═══════════════════════════════════════════════════════════════
-# ASCII Logo
-# ═══════════════════════════════════════════════════════════════
-AUDIOBRAIN_LOGO = """
- █████╗       ██╗   ██╗    ████████╗
-██╔══██╗      ██║   ██║    ╚══██╔══╝
-███████║      ██║   ██║       ██║
-██╔══██║      ╚██╗ ██╔╝       ██║
-██║  ██║       ╚████╔╝        ██║
-╚═╝  ╚═╝        ╚═══╝         ╚═╝
-  Audio / Visual Transformer
-"""
 
 # ═══════════════════════════════════════════════════════════════
 # Effect Registry
@@ -68,6 +58,54 @@ MODE = [("Fluid","fluid"),("Glitch","glitch"),("Evolving","evolving")]
 # ═══════════════════════════════════════════════════════════════
 # Home Screen
 # ═══════════════════════════════════════════════════════════════
+class Logo(Static):
+    """Rich-rendered A/VT logo with Panel + gradient — █-only for perfect alignment."""
+
+    LOGO_LINES = [
+        " ██████       ██    ██     ████████ ",
+        " ██  ██       ██    ██        ██    ",
+        " ██████       ██    ██        ██    ",
+        " ██  ██       █ █  █ █        ██    ",
+        " ██  ██        ██  ██         ██    ",
+        " ██  ██         ████          ██    ",
+    ]
+
+    @staticmethod
+    def _gradient(start_rgb, end_rgb, steps):
+        sr, sg, sb = start_rgb
+        er, eg, eb = end_rgb
+        colors = []
+        for i in range(steps):
+            t = i / max(1, steps - 1)
+            r = int(sr + (er - sr) * t)
+            g = int(sg + (eg - sg) * t)
+            b = int(sb + (eb - sb) * t)
+            colors.append(f"bold rgb({r},{g},{b})")
+        return colors
+
+    def render(self):
+        n = len(self.LOGO_LINES)
+        gradient = self._gradient((60, 70, 180), (100, 210, 255), n)
+
+        inner = Text()
+        for i, line in enumerate(self.LOGO_LINES):
+            inner.append(line + "\n", style=gradient[i])
+
+        inner.append(
+            "\nAudio / Visual Transformer — generative soundscape engine",
+            style="dim italic"
+        )
+
+        return Panel(
+            Align.center(inner, vertical="middle"),
+            border_style="dim cyan",
+            padding=(1, 6),
+            expand=False,
+            title="[bold]A/VT[/bold]",
+            subtitle="[dim]v1.0[/dim]",
+        )
+
+
 class HomeScreen(Screen):
     """Home screen with ASCII logo and main menu."""
     BINDINGS = [
@@ -82,7 +120,7 @@ class HomeScreen(Screen):
         yield Header(show_clock=True)
         with Container(id="home-container"):
             with Vertical(id="home-content"):
-                yield Static(AUDIOBRAIN_LOGO, id="logo")
+                yield Logo(id="logo")
                 with Vertical(id="menu"):
                     yield Button("▶ Start", id="btn-start", variant="primary")
                     yield Button(" Docs", id="btn-docs", variant="default")
@@ -127,62 +165,258 @@ class DocsScreen(Screen):
     BINDINGS = [Binding("escape", "back", "Back")]
 
     DOCS_MD = """\
-# AudioBrain — Parameter Guide
+# AudioBrain — Complete Documentation
 
-## Synthesis
+## Architecture & Pipeline
+
+AudioBrain uses a generative audio pipeline that maps real-world sounds through a
+learned latent space and back into new synthesized audio:
+
+```
+Source Audio → PANNs Feature Extractor (2048-dim) → Projection (2048→512)
+  → SoundscapeTransformer (512-dim, 64 segments) → Latent Representation
+  → k-NN Mosaic Synthesizer → Output Audio
+```
+
+The **latent space** (512 dimensions × 64 time segments) encodes the learned
+characteristics of the source audio. Each dimension captures some acoustic feature
+— pitch, timbre, rhythm, texture — discovered during the model's self-supervised learning.
+The visualization is a direct window into this space.
+
+---
+
+## Synthesis Parameters
 
 ### Mode
-- **Fluid** — smooth continuous transitions
-- **Glitch** — abrupt fragmented jumps
-- **Evolving** — gradual drift between states
+The generation behavior that controls how the synthesizer moves through the
+latent space of the source audio database.
+- **Fluid** — smooth, continuous transitions between segments. Latent vectors
+  are interpolated, creating seamless morphing between timbres. Best for
+  ambient pads, drones, and evolving textures.
+- **Glitch** — abrupt, fragmented jumps. The synthesizer skips randomly through
+  the latent space, producing sharp cuts between dissimilar audio fragments.
+  Good for stutter effects, rhythmic glitch, and IDM textures.
+- **Evolving** — gradual drift between states. The latent path wanders slowly
+  through the space, producing slow transformations over multiple segments.
+  Ideal for long-form generative pieces and organic soundscapes.
 
 ### Temperature
-- `0.0` = deterministic (same output every time)
-- `1.0` = maximum randomness and surprise
+Controls the randomness of the k-NN neighbor selection during synthesis.
+- `0.0` — **Deterministic.** Always picks the nearest latent neighbor. Same
+  input + same seed = identical output every time. Use for reproducibility.
+- `0.1–0.3` — **Controlled.** Mostly picks close neighbors with occasional
+  variation. Good balance between coherence and surprise.
+- `0.5–0.7` — **Creative.** Significant randomness in neighbor choice. Each
+  segment may jump to unexpected audio fragments.
+- `0.8–1.0` — **Chaotic.** Nearly uniform random selection. The output bears
+  minimal relationship to the source. Exploratory/experimental.
 
 ### Density
-- `0.0` = sparse with silence between segments
-- `1.0` = full coverage, no gaps
+How many of the available segment slots are filled with audio.
+- `0.0` — Empty output (silent). Useful as a baseline.
+- `0.2–0.4` — Sparse. Gaps of silence between audio segments. Creates
+  breathing room, good for ambient with negative space.
+- `0.5–0.7` — Medium. Some silence, mostly audio. Natural feel.
+- `1.0` — Full coverage. Every segment slot is filled. Maximum density,
+  no gaps. Best for continuous soundscapes.
 
-### Segment
-- Duration of each audio slice in seconds
-- Shorter = more grains, finer texture
+### Segment Duration
+Length of each individual audio fragment in **seconds**.
+- `0.1–0.5s` — Micro-granular. Hundreds of tiny grains per second of output.
+  Creates textural, glitchy, or granular-synthesis effects.
+- `0.5–2.0s` — Medium grain. Each fragment is a recognizable sound snippet.
+  Good balance for most music production.
+- `2.0–5.0s` — Long segments. Fewer grains preserve the character of the
+  source audio. Best for long-form ambient or drone.
 
 ### Crossfade
-- Overlap between segments for smooth joins
-- Higher = smoother but can wash out detail
+Overlap between adjacent segments, in **seconds**.
+- `0.0` — Hard cuts. Abrupt transitions, no blending.
+- `0.05–0.2s` — Tight overlap. Minimal smoothing, preserves attack transients.
+- `0.3–0.6s` — Smooth overlap. Natural-sounding joins between segments.
+- `0.7–2.0s` — Long crossfade. Heavy blending can wash out detail but
+  produces extremely smooth, pad-like textures.
 
 ### Seed
-- Integer for reproducible results
-- Same seed + temp=0 = identical output
+Integer seed for the pseudorandom number generator.
+- Used to make results **reproducible**.
+- Same seed + same audio file + `temp=0.0` = bit-identical output.
+- Different seeds produce different latent paths even with `temp=0.0`.
+- Set to `-1` (or any non-integer) for truly random initialization each run.
+
+---
 
 ## Preprocessing
 
-### Sample Rate
-- `32000` = PANNs native, best quality
-- `16000` = smaller files, faster
+### Sample Rate (Hz)
+The audio sample rate for processing and synthesis.
+- `32000` — PANNs model's native rate. **Recommended.** Produces the best
+  quality because the feature extractor was trained at this rate.
+- `16000` — Half-rate. Smaller files, faster processing, 8 kHz bandwidth.
+  Sufficient for lo-fi or experimental work.
+- `22050, 44100, 48000` — Other common rates. The system will resample
+  to a supported rate, but quality may degrade slightly.
 
-## Effects
+### Gain (dB)
+Input gain applied before feature extraction.
+- `0.0` — Unity. No change to input level.
+- `-6.0` — Quieter input, less activation in the latent space.
+- `+6.0` — Louder input, pushes features into higher activation ranges.
+- Values beyond ±12 dB are clamped to avoid clipping.
 
-| Effect    | Parameters                    |
-|-----------|-------------------------------|
-| Bitcrush  | bits (2–16), mix (0–1)       |
-| Delay     | time_ms, feedback, mix       |
-| Distortion| drive (1–20), mix (0–1)      |
-| Flanger   | depth_ms, rate_hz, mix       |
-| Glitch    | intensity (0–1), mix (0–1)   |
-| Pitch ↓   | semitones (1–24), mix (0–1)  |
-| Pitch ↑   | semitones (1–24), mix (0–1)  |
+### EQ Presets
+Spectral shaping applied before feature extraction:
+- **Raw** — No EQ. The source audio is processed as-is.
+- **Warm** — Boosts low-mids (200–500 Hz), cuts highs. Vintage sound.
+- **Bright** — Boosts highs (2–10 kHz). Adds air and presence.
+- **Dark** — Cuts highs, boosts lows. Muffled, underwater tone.
+- **Airy** — Gentle high-shelf boost above 8 kHz. Subtle sparkle.
 
-## Shortcuts
+### Normalization
+Level normalization applied to the output:
+- **Peak** — Normalizes so the loudest sample hits 0 dBFS. Max loudness.
+- **RMS** — Normalizes average (RMS) level. More natural perceived loudness.
+- **None** — No normalization. Preserves original dynamics.
 
-| Key | Action      |
-|-----|-------------|
-| h   | Home        |
-| g   | Generate    |
-| c   | Clear FX    |
-| q   | Quit        |
-| Esc | Cancel/Back |
+### Stereo Mode
+How multi-channel audio is handled:
+- **Mono** — Sums to mono. Both channels averaged.
+- **Left** — Uses only the left channel.
+- **Right** — Uses only the right channel.
+- **Stereo** — Processes both channels independently. Preserves stereo field
+  but doubles computation.
+
+### Color Scheme
+The HTML visualization's color palette. 10 presets are available:
+- **Heat** — Red → yellow → white (intensity ramp)
+- **Ocean** — Deep blue → teal → white (depth)
+- **Forest** — Dark green → lime → mint
+- **Sunset** — Purple → orange → yellow
+- **Aurora** — Teal → magenta → cyan
+- **Mono** — Grayscale gradient
+- **Neon** — Magenta → cyan → green → yellow
+- **Dusk** — Deep purple → magenta → orange
+- **Ember** — Dark red → orange → bright
+- **Glacier** — Pale blue → white
+
+### Character Ramp
+The ASCII character set used to render the visualization. 15 sets:
+- **Dots** — `··∘∘●●●•◦◆◇◈◉◊○◎●` — Rounded, organic feel
+- **Ascii** — `.:;-=+*#%@★★★★` — Classic terminal look
+- **Blocks** — `░░▒▒▓▓█████` — Solid block gradients
+- **Braille** — `⠁⠃⠇⠏⠟⠿⣿` — Tiny dot patterns
+- **Binary** — `0101010101` — Abstract digital
+- **Pixels** — `░░▒▒▓▓██████` — Pixel-art style
+
+---
+
+## Audio Effects
+
+Effects are applied to the synthesized audio **after** synthesis, in the order
+they appear in the chain.
+
+### Bitcrush
+Lo-fi bit-depth and sample-rate reduction for a crunchy, retro-digital sound.
+- **Bits** (2–16): Bit depth. 8 = 8-bit console, 4 = harsh aliasing, 2 = extreme.
+- **Mix** (0.0–1.0): Dry/wet blend. 0 = clean, 1 = fully crushed.
+
+### Delay
+Echo with adjustable feedback and time.
+- **Time ms** (20–1000): Delay time in milliseconds. 20–50 = slapback, 100–300 = echo, 500+ = long trails.
+- **Feedback** (0.0–1.0): How much signal feeds back. 0 = single repeat, 0.5 = moderate, 0.9+ = near-infinite.
+- **Mix** (0.0–1.0): Dry/wet balance.
+
+### Distortion
+Tanh-based soft-clipping overdrive for warmth or aggression.
+- **Drive** (1–20): Gain before clipping. 1–3 = subtle warmth, 5–10 = overdrive, 15–20 = heavy distortion.
+- **Mix** (0.0–1.0): Dry/wet blend.
+
+### Flanger
+Sweeping comb-filter modulation for jet-plane whoosh effects.
+- **Depth ms** (1–10): Modulation depth. Higher = more dramatic sweep.
+- **Rate Hz** (0.1–2.0): LFO frequency. 0.1–0.3 = slow sweep, 0.5–1.0 = classic, 1.5+ = fast warble.
+- **Mix** (0.0–1.0): Dry/wet blend.
+
+### Glitch
+Stochastic stutter and repetition for IDM/experimental textures.
+- **Intensity** (0.0–1.0): Probability and depth of glitch events. 0 = none, 0.3 = occasional, 0.7+ = heavy.
+- **Mix** (0.0–1.0): Dry/wet blend.
+
+### Pitch ↓ / Pitch ↑
+Frequency shifting up or down in semitones.
+- **Semitones** (1–24): Shift amount. 12 = one octave, 7 = perfect fifth, 24 = two octaves.
+- **Mix** (0.0–1.0): Dry/wet blend.
+
+---
+
+## Visualization
+
+The HTML output contains three synchronized views:
+
+### Latent Spectrogram
+A **{gs}×{gs}** grid where each column maps to one latent dimension and each
+row is one time segment. Cell color intensity = activation strength of that
+feature at that moment. Character density adds a second dimension of information.
+
+### Chladni Nodal Lines
+Derived from the latent vectors' resonant modes. The system interprets the
+latent amplitudes as vibrating plate harmonics and draws the sign-change
+boundaries (nodal lines) as bright characters overlaid on the spectrogram.
+These are the "fingerprint" of the sound — different audio sources produce
+visibly different Chladni patterns.
+
+### Real Spectrogram
+A classic STFT (Short-Time Fourier Transform) of the final audio output.
+**64 frequency bins × 64 time frames**, rendered with the same ASCII character
+grid. This shows what frequencies are actually present in the output, allowing
+direct comparison between the learned latent structure and physical sound.
+
+---
+
+## Keyboard Shortcuts
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `1` | Home | Start (go to workspace) |
+| `2` | Home | Documentation |
+| `3` | Home | About |
+| `4`, `q` | Home | Quit |
+| `h` | Workspace | Go home |
+| `g` | Workspace | Generate audio |
+| `c` | Workspace | Clear all effects |
+| `Esc` | Any | Cancel generation / go back |
+
+---
+
+## File Management
+
+- **Load Source** — Opens a native OS file dialog to select a `.wav`, `.mp3`,
+  or `.flac` audio file. The file is added to the database.
+- **Database** — Holds all loaded audio files. The synthesizer draws from
+  these files when building segments. Multiple files = richer synthesis.
+- **Clear DB** — Removes all files from the database.
+- **Output Path** — Where the generated `.wav` and `.html` files are saved.
+- **View** — Opens the HTML visualization in your default browser.
+- **Play** — Plays the generated audio through your system's default player.
+- **Stop** — Cancels an in-progress generation or stops playback.
+
+---
+
+## Tips
+
+1. **Start with a single source file** in Fluid mode, temp=0.3, density=1.0.
+   This gives you a clean, listenable result to tune further.
+2. **Add more files to the database** for richer, more varied output. The
+   k-NN synthesizer can jump between different source files.
+3. **Use low temperature (0.1–0.3) for ambient**, higher (0.5–0.8) for
+   experimental/glitch work.
+4. **Short segments (0.2–0.5s) + Glitch mode** = granular IDM textures.
+5. **Long segments (3–5s) + Fluid mode** = cinematic drones and pads.
+6. **Effects chain order matters** — try Distortion → Delay → Reverb-like
+   combinations for sound design.
+7. **The visualization IS the model's output** — the Chladni patterns and
+   spectrogram are direct renderings of the learned latent features, not
+   just decorative elements.
 """
 
     def compose(self) -> ComposeResult:
@@ -211,30 +445,168 @@ class AboutScreen(Screen):
     ABOUT_MD = """\
 # About AudioBrain TUI
 
-**Version:** 0.4.0
-**Date:** 2026-06-13
+**Version:** 0.5.0
+**Date:** 2026-06-14
 
-AudioBrain TUI is a terminal interface for the A/VT
-(Audio/Visual Transformer) generative soundscape system.
+AudioBrain TUI is the terminal frontend for the **A/VT** (Audio/Visual Transformer)
+generative soundscape system. It processes real audio through a deep learning latent
+space and synthesizes entirely new soundscapes — with synchronized ASCII-art
+visualizations that ARE the outputs of the model, not decorative add-ons.
 
-## Architecture
+---
+
+## Architecture & Pipeline
+
+The full processing chain:
+
 ```
-Audio → PANNs (2048) → Transformer (512) → k-NN → Audio
+┌──────────────────────────────────────────────────────────────┐
+│ Source Audio (.wav / .mp3 / .flac)                          │
+│   → Resample & preprocess (gain, EQ, normalization)         │
+│   → Segment into overlapping windows                        │
+│   → PANNs CNN14 feature extractor (2048-dim embeddings)     │
+│   → ProjectionHead (2048 → 512) — dimensionality reduction  │
+│   → SoundscapeTransformer (6-layer, 512-dim, 64-segment)    │
+│   → Latent representation: (64 × 512) tensor                │
+│                                                              │
+│ SYNTHESIS PHASE                                              │
+│   → k-NN search across audio database's latent segment map  │
+│   → Temperature-weighted neighbor selection                 │
+│   → Mode-driven segment sequencing (fluid/glitch/evolving)  │
+│   → Crossfade overlap assembly                              │
+│   → Audio effects chain (bitcrush, delay, distort, etc.)    │
+│                                                              │
+│ OUTPUT                                                       │
+│   → Generated audio (.wav)                                  │
+│   → Interactive HTML visualization (.html)                  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Technology
-- **Textual** — Python TUI framework
-- **PyTorch + Transformers** — HuggingFace
-- **Librosa, SoundFile, NumPy**
+### Key Components
 
-## Features
-- File management
-- Preprocessing controls
-- Synthesis parameters
-- Audio effects chain
-- HTML visualization export
+**Feature Extractor (PANNs)**
+The CNN14 model from the PANNs (Pretrained Audio Neural Networks) family,
+pretrained on AudioSet. It produces 2048-dimensional embeddings that capture
+semantic audio features — instrument type, pitch, timbre, spatial characteristics.
+This is the "ear" of the system.
 
-**License:** MIT
+**ProjectionHead**
+A learned linear projection from the 2048-dim feature space down to the
+512-dim latent space. Trained via contrastive learning to preserve the most
+salient acoustic differences while discarding noise.
+
+**SoundscapeTransformer**
+6-layer autoregressive transformer operating on 64-segment sequences of
+512-dim latent vectors. Each segment represents ~0.5–1.0s of audio. The
+transformer learns temporal relationships between segments — what sounds
+typically follow, how textures evolve, rhythm and pacing patterns.
+
+**AudioMosaicSynthesizer**
+The k-NN-based mosaic synthesis engine. For each output segment position:
+1. Queries the latent space for the k nearest neighbor segments
+2. Selects one via temperature-weighted probability
+3. Extracts the corresponding raw audio from the database
+4. Applies crossfade overlap with the previous segment
+
+---
+
+## Visualization System
+
+The HTML output contains **three synchronized, real-time ASCII visualization views**,
+all rendered directly from the model's internal state:
+
+### 1. Latent Spectrogram
+A **{gs}×{gs}** grid of colored characters. Each of the {gs} columns represents one
+dimension of the 512-dim latent space (the 64 most "active" dimensions are selected).
+Each row is a time step. Cell color intensity maps to the activation strength of
+that feature at that moment. Character density provides a second information
+channel — denser characters = stronger activations.
+
+### 2. Chladni Nodal Lines
+Named after Ernst Chladni's 18th-century vibrating plate experiments, these are
+the **sign-change boundaries** computed from the latent vectors' resonant modes.
+The system treats the latent amplitudes as vibrating plate harmonics and draws
+the nodes (lines where the sign changes) as bright characters overlaid on the
+spectrogram. Different audio sources produce recognizably different Chladni
+patterns — these are the "fingerprint" of your sound.
+
+The Chladni computation uses:
+- Circular plate geometry with 128 harmonic modes
+- Amplitude-weighted modal superposition
+- Sign-change edge detection (8-directional)
+- Thickness modulation based on local gradient magnitude
+
+### 3. Real Spectrogram
+A classic Short-Time Fourier Transform (STFT) of the final audio output,
+rendered in the same ASCII grid format for direct visual comparison with
+the latent views.
+
+Parameters: 64 frequency bins (log-spaced), 64 time frames, Hanning window.
+
+### 4. Live Waveform
+An interactive oscilloscope driven by the Web Audio API's AnalyserNode.
+80 columns × 12 rows of ASCII characters, updated at 60fps from the
+time-domain waveform data.
+
+---
+
+## Color Schemes (10 presets)
+
+| Scheme   | Gradient                         | Character |
+|----------|----------------------------------|-----------|
+| Heat     | Black → red → yellow → white     | Intense   |
+| Ocean    | Deep blue → teal → bright cyan   | Flowing   |
+| Forest   | Dark green → lime → mint         | Organic   |
+| Sunset   | Deep purple → orange → yellow    | Warm      |
+| Aurora   | Teal → magenta → cyan            | Electric  |
+| Mono     | Black → gray → white             | Clean     |
+| Neon     | Magenta → cyan → lime → yellow   | Synthetic |
+| Dusk     | Dark purple → magenta → orange   | Moody     |
+| Ember    | Dark maroon → orange → bright    | Hot       |
+| Glacier  | Pale blue → ice white            | Cool      |
+
+---
+
+## Character Ramps (15 sets)
+
+| Ramp       | Characters                   | Style            |
+|------------|------------------------------|------------------|
+| Dots       | ` ··∘∘●●●•◦◆◇◈◉◊○◎●`        | Rounded, organic |
+| Ascii      | ` .:;-=+*#%@★★★★`           | Classic terminal |
+| Blocks     | ` ░░▒▒▓▓█████`              | Solid gradients  |
+| Braille    | ` ⠁⠃⠇⠏⠟⠿⣿`           | Dot patterns     |
+| Binary     | ` 0101010101`                | Abstract digital |
+| Minimal    | ` .·:·::▪▪▪`                | Sparse & clean   |
+| Hexdots    | ` ⠄⠆⠇⠏⠿⣿⣿`         | Dense dot field  |
+| Cubes      | ` ░░▒▒▓▓████▓▓`             | 3D cube illusion |
+| Arrows     | ` ·›»►▸▶▼▲◆`                | Directional      |
+| Sparks     | ` ·˙∴⋯⋰⋱⚡✨`               | Electric feel    |
+| Pixels     | ` ░░▒▒▓▓██████`             | Pixel art        |
+| Cistercian | ` ⠀⠁⠃⠇⠏⠟⠿⣿⣿`   | Medieval numeral |
+| Morse      | ` ·-▪▬▬▪`                   | Telegraph code   |
+| LCD        | ` ▓███▓`                     | Segmented readout|
+| Shades     | ` ░░▒░▒▓▒▓██▓█`             | Half-tone dither |
+
+---
+
+## Technology Stack
+
+| Layer          | Technology                      |
+|----------------|---------------------------------|
+| **TUI**        | Textual (0.x), Rich markup      |
+| **ML Backend** | PyTorch 2.x, Transformers 4.x   |
+| **Audio**      | Librosa, SoundFile, NumPy       |
+| **Feature Ext**| PANNs CNN14 (AudioSet pretrained)|
+| **Effects**    | Custom DSP: bitcrush, delay, distortion, flanger, glitch, pitch shift |
+| **File I/O**   | Native OS dialogs (AppleScript, PowerShell, Zenity) |
+| **Playback**   | afplay / wmplayer / xdg-open    |
+| **Visualization** | HTML/CSS/JS with Web Audio API, HTML2Canvas |
+
+---
+
+## License
+
+**MIT** — AudioBrain is free and open source. Use it, modify it, share it.
 """
 
     def compose(self) -> ComposeResult:
@@ -868,7 +1240,7 @@ class AudioBrainTUI(App):
 
     #home-content {
         height: auto;
-        width: auto;
+        width: 54;
         align: center middle;
     }
 
@@ -877,19 +1249,23 @@ class AudioBrainTUI(App):
         text-style: bold;
         color: $primary;
         height: auto;
-        width: auto;
+        width: 100%;
     }
 
     #menu {
         height: auto;
-        width: 30;
+        width: 100%;
         align: center middle;
-        margin-top: 1;
+        margin-top: 2;
+        content-align: center middle;
     }
 
     #menu Button {
         width: 100%;
+        height: 3;
         margin: 1 0;
+        content-align: center middle;
+        min-width: 30;
     }
 
     #version {
