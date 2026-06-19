@@ -1,4 +1,3 @@
-```
 # Compiled and build artifacts
 *.pyc
 __pycache__/
@@ -39,22 +38,24 @@ target/
 *.egg-info/
 
 # Python specific
-*.pyc
-__pycache__/
 *.pyo
 *.pyd
 .Python
-*.so
 
+# Cache directories
+.mypy_cache/
+.pytest_cache/
+.gradle/
+
+# AI assistants
 .claude
 .deepseek
 .deepseek/
 .qwen
 .qwen/
 
-# Cache directories
-.mypy_cache/
-.pytest_cache/
-.gradle/
-```
-session_20260613_151948.json
+# Session files
+session_*.json
+
+# macOS
+.DS_Store

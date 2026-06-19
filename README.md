@@ -16,15 +16,15 @@ Audio Input  →  PANNs/AST  →  Projection  →  Transformer  →  k-NN Mosaic
 
 ## Modules
 
-| Module | Description |
-|--------|-------------|
-| **Feature Extraction** | HuggingFace AST models (AudioSet) with manual CNN fallback, 2048-dim embeddings |
-| **Transformer Core** | 2-layer encoder, 8 attention heads, 512-dim latent space, autoregressive generation |
-| **Mosaicing Synthesis** | k-NN search in latent space, raised-cosine crossfade, temperature/density/mode controls |
-| **ASCII Visualization** | 63x63 cosine-similarity matrix with ANSI color support and multiple character sets |
-| **Audio Effects** | Bitcrush, pitch shift, flanger, glitch, distortion, delay via EffectChain |
-| **CLI** | Full argparse interface with `generate`, `visualize`, `train`, `info` subcommands |
-| **TUI** | Terminal User Interface (Textual) with file browser, effects sliders, progress bar, audio playback |
+| Module                  | Description                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------- |
+| **Feature Extraction**  | HuggingFace AST models (AudioSet) with manual CNN fallback, 2048-dim embeddings                    |
+| **Transformer Core**    | 2-layer encoder, 8 attention heads, 512-dim latent space, autoregressive generation                |
+| **Mosaicing Synthesis** | k-NN search in latent space, raised-cosine crossfade, temperature/density/mode controls            |
+| **ASCII Visualization** | 63x63 cosine-similarity matrix with ANSI color support and multiple character sets                 |
+| **Audio Effects**       | Bitcrush, pitch shift, flanger, glitch, distortion, delay via EffectChain                          |
+| **CLI**                 | Full argparse interface with `generate`, `visualize`, `info` subcommands                           |
+| **TUI**                 | Terminal User Interface (Textual) with file browser, effects sliders, progress bar, audio playback |
 
 ## Quick Start
 
@@ -44,9 +44,6 @@ python audiobrain/cli.py generate --source input.wav --database samples/*.wav --
 
 # Visualize latent structure
 python audiobrain/cli.py visualize --source output.wav --stats
-
-# Train the transformer on synthetic data (for testing)
-python audiobrain/cli.py train --epochs 50
 ```
 
 ## Python API
@@ -69,9 +66,13 @@ print(f"Parameters: {model.count_parameters():,}")
 ```
 audiobrain/
   __init__.py           # Package root
+  __main__.py           # Module entry point
   cli.py                # CLI interface
   tui/                  # Terminal User Interface
-    app.py              # Textual app (Home, Workspace, Docs, About screens)
+    app.py              # Textual app (Home, Workspace, About screens)
+    app_base.py         # Base TUI utilities
+    app_header.py       # Header rendering
+    widgets.py          # Custom TUI widgets
   model/                # Core model
     core.py             # AudioBrainCore (main class)
     config.py           # BrainConfig dataclass
@@ -90,25 +91,6 @@ audiobrain/
   effects/              # Post-processing effects
     chain.py            # EffectChain
     bitcrusher.py, pitch.py, flanger.py, glitch.py, distortion.py, delay.py
-  tests/                # Unit tests
-    test_projection.py
-    test_transformer.py
-    test_core.py
-    run_tests.py        # Plain-Python test runner
-src/                    # Supporting scripts
-  experiments/train.py  # Training verification script
-tests/                  # Integration tests
-```
-
-## Validation
-
-- **32 unit tests** covering shape validation, dimension mismatch, determinism, gradient flow, checkpoint roundtrip, loss decrease
-- Training verified: loss decreases ~0.183 → ~0.015 over 50 epochs
-- Checkpoint save/load roundtrip verified (weight-perfect match)
-- Deterministic generation verified at temperature=0
-
-```bash
-python audiobrain/tests/run_tests.py
 ```
 
 ## License

@@ -25,4 +25,4 @@ dependencies = [
 avt = "audiobrain.tui.app:run"
 
 [tool.setuptools.packages.find]
-include = ["audiobrain*", "src*"]
+include = ["audiobrain*"]

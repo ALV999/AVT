@@ -34,6 +34,8 @@ audiobrain/tests/test_projection.py
 audiobrain/tests/test_transformer.py
 audiobrain/tui/__init__.py
 audiobrain/tui/app.py
+audiobrain/tui/app_base.py
+audiobrain/tui/app_header.py
 audiobrain/tui/widgets.py
 avt.egg-info/PKG-INFO
 avt.egg-info/SOURCES.txt
